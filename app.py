@@ -1,83 +1,83 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup  # Для парсинга страниц
+from bs4 import BeautifulSoup
 import json
 
 st.title("Конкурентный Анализатор")
 
 # Поле для ввода API-ключа Mistral
-api_key = st.text_input("Введи свой API-ключ Mistral (начинается с m- или просто токен)", type="password")
+api_key = st.text_input("Введи свой API-ключ Mistral", type="password")
 
 if not api_key:
-    st.warning("Введите свой API-ключ Mistral, чтобы начать анализ.")
-    st.info("Ключ можно получить здесь: https://console.mistral.ai/api-keys")
+    st.warning("Введите ключ Mistral, чтобы начать анализ.")
+    st.info("Получить ключ: https://console.mistral.ai/api-keys")
     st.stop()
 
-# URL API Mistral
+# Проверка ключа на валидный вид (примерно)
+if len(api_key) < 20:
+    st.error("Ключ выглядит слишком коротким. Проверьте, правильно ли скопировали.")
+    st.stop()
+
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 
-# Определение инструмента для просмотра страниц (browsing)
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "browse_page",
-            "description": "Просмотреть и извлечь текст с сайта по URL. Используй это для анализа домена или конкурентов, чтобы получить актуальную информацию.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "URL сайта для просмотра"}
-                },
-                "required": ["url"]
-            }
+# Инструмент для просмотра сайтов
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "browse_page",
+        "description": "Посмотреть содержимое сайта по URL и извлечь текст. Используй для анализа домена и сайтов конкурентов.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Полный URL сайта"}
+            },
+            "required": ["url"]
         }
     }
-]
+}]
 
-# Функция для выполнения tool browse_page (извлекает текст с страницы)
+# Функция просмотра страницы
 def browse_page(url):
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        # Извлекаем основной текст (без тегов)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        r = requests.get(url, timeout=12, headers=headers)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, 'html.parser')
         text = soup.get_text(separator=' ', strip=True)
-        # Ограничиваем длину, чтобы не превысить токены
-        return text[:10000]  # Максимум 10000 символов
+        return text[:12000]  # Ограничим, чтобы не превысить токены
     except Exception as e:
-        return f"Ошибка при просмотре страницы: {str(e)}"
+        return f"Не удалось открыть сайт {url}: {str(e)}"
 
-# Твой промпт с инструкциями для использования инструментов
+# Твой промпт с инструкцией использовать инструмент
 base_prompt = """
-Ты должен использовать доступные инструменты (особенно browse_page) для просмотра и анализа сайтов. 
-- Перед анализом ОБЯЗАТЕЛЬНО используй browse_page для посещения указанного домена, чтобы получить актуальную информацию о стране, регионе, работе (локально/по стране), тематике, доставке.
-- Для конкурентов: найди их сайты через поиск, затем используй browse_page для каждого конкурента, чтобы проверить живость сайта, тематику, масштаб (команда, штат), регион.
-- Основывайся ТОЛЬКО на данных из интернета (из инструментов). Если данных нет — скажи об этом, не додумывай.
-- Для пункта 1.3 (запросы): используй поиск в интернете (Яндекс Вордстат или Google Ads данные), чтобы найти актуальные цифры или фразы.
-- Для пункта 1.4 и 1.7: найди конкурентов через поиск, проверь каждый сайт browse_page, исключи доски объявлений и госучреждения, выбери 10 похожих по силе.
-- Для 1.5 и 1.6: используй поиск для данных о популярных мессенджерах/площадках в стране, учти блокировки.
+Ты аналитик сайтов. ОБЯЗАТЕЛЬНО используй инструмент browse_page для просмотра домена и сайтов конкурентов перед ответом.
+- Перед анализом просмотри основной домен: проверь страну, регион, доставку, контакты, масштаб.
+- Для конкурентов: найди их через поиск, затем просмотри каждый сайт browse_page, проверь живость, тематику, масштаб (команда/штат), регион.
+- Исключай доски объявлений и госучреждения.
+- Основывайся ТОЛЬКО на реальных данных из интернета (из инструментов). Не додумывай.
+- Для запросов (1.3): ищи актуальные данные в Яндекс Вордстат / Google Ads через поиск.
+- Если сайт не открывается — укажи это.
 
-Выполни эти пункты:
+Пункты анализа:
 1.1 Страна, регион/город
-1.2 Работает ли по всей стране или же локально (это важно смотри на тематику/доставку/выезд по стране/региону)
-1.3 Топ 10 точных запросов в месяц в Яндекс Вордстат (если это сайты РФ или Белоруссии) или ads.google (если сайты Узбекские и Казахские) так же смотри внимательно на тематику сайты а не на домен и еще давай топ запросы только по городу или региону но если доставка по стране/онлайн услуги то давай запросы по стране так же напиши это в столбик с количеством просмотров в месяц если информации нету то дай топ 10 фраз для запроса что бы я сам проверил
-1.4 Далее ищешь самых ближайших прямых конкурентов у которых есть живые рабочие сайты с подходящей тематикой (город/область и на крайний случай по стране ) так же смотри на то чтобы конкуренты были одинаковой силы (пример наш сайт это команда из 10 человек а конкурент компания со штатом сотрудников из 10 тыщ.) так же не когда не бери за конкурентов доски обьявлений и государственные учериждения 
-1.5 Укажи какие мессенджеры подойдут для нашего сайты для привлечения клиентов и т.д в процентном отображении из топ 10 (но обрати внимание что в РФ заблокированы многие мессенджеры их ты не указываешь и так во всех странах ) (так же смотри на нишу подойдет или данный мессенджер/площадка) 
-1.6 Делаешь все то же самое что в пункте 1.5 но с площадками пример авито  
-1.7 выдай сайты конкурентов именно ссылкой штук 10 то есть топ 10 
-1.8 в самом начале напиши это коммерческий или некоммерческий это тоже важно 
-1.9 ничего не додумывай основываясь только на той информации которая есть в интернете (если есть противоречия напиши их рядом с коммерческий  ) 
-и если меня что то не устроит из пунктов я буду тебе писать пункт который нужно переделать (только то пункт который я укажу)
+1.2 Работает ли по всей стране или локально
+1.3 Топ 10 запросов в месяц (с цифрами или фразами для проверки)
+1.4 10 ближайших конкурентов (проверь каждый сайт)
+1.5 Подходящие мессенджеры в % (учти блокировки в РФ)
+1.6 Подходящие площадки (Avito и др.) в %
+1.7 Ссылки на 10 конкурентов
+1.8 Коммерческий или некоммерческий
+1.9 Только факты из интернета, противоречия указывай
 """
 
 domain = st.text_input("Введи домен сайта (например, example.com):")
 
-if 'analysis_result' not in st.session_state:
-    st.session_state.analysis_result = ""
+if 'result' not in st.session_state:
+    st.session_state.result = ""
 if 'refine' not in st.session_state:
     st.session_state.refine = False
 
-def call_mistral(messages, tools=None):
+def call_mistral(messages, use_tools=False):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -88,78 +88,107 @@ def call_mistral(messages, tools=None):
         "temperature": 0.7,
         "max_tokens": 4096
     }
-    if tools:
+    if use_tools:
         payload["tools"] = tools
 
-    response = requests.post(MISTRAL_API_URL, json=payload, headers=headers)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]
+    try:
+        r = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=30)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]
+    except requests.exceptions.HTTPError as e:
+        if r.status_code == 503:
+            raise Exception("Сервер Mistral временно недоступен (503). Попробуйте через 5–15 минут.")
+        elif r.status_code == 429:
+            raise Exception("Лимит запросов исчерпан. Подождите или пополните баланс.")
+        else:
+            raise Exception(f"HTTP ошибка {r.status_code}: {r.text}")
+    except Exception as e:
+        raise Exception(f"Ошибка связи с Mistral: {str(e)}")
 
 if st.button("Провести анализ"):
     if domain:
-        with st.spinner("Анализ выполняется с просмотром сайтов..."):
+        with st.spinner("Анализирую сайты и конкурентов..."):
             try:
-                initial_prompt = base_prompt + f"\n\nАнализируй этот домен: {domain}"
-                messages = [{"role": "user", "content": initial_prompt}]
+                prompt = base_prompt + f"\n\nАнализируй домен: {domain}"
+                messages = [{"role": "user", "content": prompt}]
 
                 while True:
-                    response = call_mistral(messages, tools)
-                    messages.append(response)
+                    resp = call_mistral(messages, use_tools=True)
+                    messages.append(resp)
 
-                    if 'tool_calls' in response:
-                        for tool_call in response['tool_calls']:
-                            func_name = tool_call['function']['name']
-                            args = json.loads(tool_call['function']['arguments'])
-                            if func_name == "browse_page":
-                                url = args['url']
-                                result = browse_page(url)
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_call_id": tool_call['id'],
-                                    "content": result
-                                })
+                    # Проверка на tool_calls
+                    if 'tool_calls' in resp and resp['tool_calls'] is not None:
+                        for tool_call in resp['tool_calls']:
+                            if tool_call.get('function', {}).get('name') == "browse_page":
+                                try:
+                                    args = json.loads(tool_call['function']['arguments'])
+                                    url = args.get('url')
+                                    if url:
+                                        content = browse_page(url)
+                                        messages.append({
+                                            "role": "tool",
+                                            "tool_call_id": tool_call['id'],
+                                            "name": "browse_page",
+                                            "content": content
+                                        })
+                                except Exception as e:
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tool_call['id'],
+                                        "name": "browse_page",
+                                        "content": f"Ошибка обработки инструмента: {str(e)}"
+                                    })
                     else:
-                        st.session_state.analysis_result = response['content']
+                        # Финальный ответ
+                        st.session_state.result = resp.get('content', 'Нет ответа от ИИ')
                         st.session_state.refine = False
                         break
             except Exception as e:
-                st.error(f"Ошибка: {str(e)}. Проверь ключ, баланс или интернет.")
+                st.error(f"Ошибка: {str(e)}")
     else:
-        st.warning("Введи домен сначала!")
+        st.warning("Введите домен")
 
-if st.session_state.analysis_result:
-    st.subheader("Результат анализа от Mistral:")
-    st.text_area("Подробный анализ:", st.session_state.analysis_result, height=500)
+if st.session_state.result:
+    st.subheader("Результат анализа:")
+    st.text_area("Анализ", st.session_state.result, height=600)
 
-if st.session_state.analysis_result and st.button("Переанализировать (более точно)"):
-    with st.spinner("Переанализ выполняется с просмотром сайтов..."):
+if st.session_state.result and st.button("Переанализировать"):
+    with st.spinner("Уточняю данные и сайты..."):
         try:
-            refine_prompt = base_prompt + f"\n\nАнализируй этот домен: {domain}\nПредыдущий анализ: {st.session_state.analysis_result}\nПереанализируй более детально и точно, исправь ошибки, основываясь только на интернете."
-            messages = [{"role": "user", "content": refine_prompt}]
+            refine = base_prompt + f"\nДомен: {domain}\nПредыдущий анализ: {st.session_state.result}\nУточни, перепроверь сайты."
+            messages = [{"role": "user", "content": refine}]
 
             while True:
-                response = call_mistral(messages, tools)
-                messages.append(response)
+                resp = call_mistral(messages, use_tools=True)
+                messages.append(resp)
 
-                if 'tool_calls' in response:
-                    for tool_call in response['tool_calls']:
-                        func_name = tool_call['function']['name']
-                        args = json.loads(tool_call['function']['arguments'])
-                        if func_name == "browse_page":
-                            url = args['url']
-                            result = browse_page(url)
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call['id'],
-                                "content": result
-                            })
+                if 'tool_calls' in resp and resp['tool_calls'] is not None:
+                    for tool_call in resp['tool_calls']:
+                        if tool_call.get('function', {}).get('name') == "browse_page":
+                            try:
+                                args = json.loads(tool_call['function']['arguments'])
+                                url = args.get('url')
+                                if url:
+                                    content = browse_page(url)
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tool_call['id'],
+                                        "name": "browse_page",
+                                        "content": content
+                                    })
+                            except:
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call['id'],
+                                    "name": "browse_page",
+                                    "content": "Ошибка инструмента"
+                                })
                 else:
-                    st.session_state.analysis_result = response['content']
+                    st.session_state.result = resp.get('content', 'Нет ответа')
                     st.session_state.refine = True
                     break
         except Exception as e:
-            st.error(f"Ошибка: {str(e)}.")
+            st.error(f"Ошибка уточнения: {str(e)}")
 
 if st.session_state.refine:
-
-    st.info("Анализ был уточнён на основе предыдущего!")
+    st.info("Анализ уточнён с дополнительным просмотром сайтов")
