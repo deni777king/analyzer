@@ -1,2 +1,6 @@
 streamlit
+
 openai
+
+beautifulsoup4
+lxml
