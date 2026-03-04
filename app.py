@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup  # Для парсинга страниц
+import json
 
 st.title("Конкурентный Анализатор")
 
@@ -160,4 +161,5 @@ if st.session_state.analysis_result and st.button("Переанализиров�
             st.error(f"Ошибка: {str(e)}.")
 
 if st.session_state.refine:
+
     st.info("Анализ был уточнён на основе предыдущего!")
