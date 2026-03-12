@@ -10,12 +10,11 @@ api_key = "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR"
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 
-# Инструмент просмотра сайтов
 tools = [{
     "type": "function",
     "function": {
         "name": "browse_page",
-        "description": "Посмотреть сайт и извлечь текст. Используй для анализа домена и конкурентов.",
+        "description": "Просмотреть сайт по URL и извлечь текст.",
         "parameters": {
             "type": "object",
             "properties": {"url": {"type": "string"}},
@@ -26,29 +25,37 @@ tools = [{
 
 def browse_page(url):
     try:
-        r = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'html.parser')
         return soup.get_text(separator=' ', strip=True)[:15000]
     except Exception as e:
-        return f"Сайт недоступен: {str(e)}"
+        return f"Сайт {url} недоступен: {str(e)}"
 
-# Обновлённый промпт — теперь ИИ выдаёт конкурентов только ссылками
+# Промпт с жёстким требованием выдавать конкурентов только ссылками
 base_prompt = """
-Ты аналитик сайтов. Используй инструмент browse_page для просмотра основного домена и сайтов конкурентов.
-Отвечай строго по пунктам, коротко, без воды.
+Ты аналитик сайтов. Отвечай ТОЛЬКО по пунктам, коротко, без лишних слов.
+ОБЯЗАТЕЛЬНО используй инструмент browse_page для просмотра основного домена и сайтов конкурентов.
+- Просмотри основной домен: страна, регион, доставка, контакты, масштаб.
+- Для конкурентов: найди 10 похожих, просмотри каждый сайт browse_page, проверь живость, тематику, масштаб (малый/средний бизнес), регион.
+- Исключай доски объявлений и госучреждения.
+- Основывайся ТОЛЬКО на фактах из интернета.
+- В пункте 7 выдай ТОЛЬКО 10 чистых кликабельных ссылок на конкурентов, без описаний и текста!
 
-Пункты:
+Структура ответа строго такая:
+
 1. Коммерческий или некоммерческий?
-2. Страна, регион/город
+2. Страна, регион/город:
 3. По всей стране или локально?
-4. Топ-10 запросов (цифры или фразы для проверки)
-5. 10 конкурентов (только коротко: живой сайт? тематика? масштаб?)
-6. Мессенджеры (% из топ-10, учти блокировки)
-7. Площадки (% из топ-10)
-8. Противоречия / отсутствие данных
-
-Особо важно: в пункте 7 выдай только чистые кликабельные ссылки на 10 конкурентов, без описаний и лишнего текста.
+4. Топ-10 запросов (цифры или фразы):
+5. 10 конкурентов (коротко: живой сайт? тематика? масштаб?):
+6. Мессенджеры (% из топ-10, учти блокировки):
+7. Площадки (% из топ-10):
+   Только 10 ссылок:
+   - https://example1.ru
+   - https://example2.ru
+   ...
+8. Противоречия / отсутствие данных:
 
 Анализируй домен: {domain}
 """
@@ -77,7 +84,7 @@ def call_mistral(messages, use_tools=False):
 
 if st.button("Провести анализ"):
     if domain:
-        with st.spinner("Анализирую сайты и конкурентов..."):
+        with st.spinner("Анализирую..."):
             try:
                 prompt = base_prompt.format(domain=domain)
                 messages = [{"role": "user", "content": prompt}]
@@ -111,12 +118,12 @@ if st.button("Провести анализ"):
 
 if st.session_state.result:
     st.subheader("Результат анализа:")
-    st.text_area("Анализ", st.session_state.result, height=700)
+    st.markdown(st.session_state.result, unsafe_allow_html=True)  # Для кликабельных ссылок
 
 if st.session_state.result and st.button("Переанализ"):
     with st.spinner("Уточняю..."):
         try:
-            refine = base_prompt.format(domain=domain) + f"\nПредыдущий анализ: {st.session_state.result}\nУточни данные."
+            refine = base_prompt.format(domain=domain) + f"\nПредыдущий: {st.session_state.result}\nУточни."
             messages = [{"role": "user", "content": refine}]
 
             while True:
