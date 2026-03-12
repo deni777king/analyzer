@@ -14,7 +14,7 @@ tools = [{
     "type": "function",
     "function": {
         "name": "browse_page",
-        "description": "Просмотреть сайт по URL и извлечь текст.",
+        "description": "Проверить сайт по URL и извлечь текст. Обязательно используй для конкурентов.",
         "parameters": {
             "type": "object",
             "properties": {"url": {"type": "string"}},
@@ -28,7 +28,8 @@ def browse_page(url):
         r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'html.parser')
-        return soup.get_text(separator=' ', strip=True)[:15000]
+        text = soup.get_text(separator=' ', strip=True)[:12000]
+        return text if len(text) > 200 else "Сайт пустой или не работает"
     except Exception as e:
         return f"Сайт {url} недоступен: {str(e)}"
 
@@ -44,40 +45,50 @@ def call_mistral(messages, use_tools=False):
         payload["tools"] = tools
 
     try:
-        r = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=60)
+        r = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]
+    except requests.exceptions.HTTPError as e:
+        if r.status_code == 429:
+            raise Exception("Лимит запросов Mistral исчерпан. Подождите 10–20 минут или пополните баланс.")
+        elif r.status_code == 503:
+            raise Exception("Сервер Mistral недоступен. Попробуйте позже.")
+        raise Exception(f"Mistral HTTP ошибка {r.status_code}: {r.text}")
+    except requests.exceptions.Timeout:
+        raise Exception("Таймаут соединения. Проверьте интернет.")
     except Exception as e:
-        raise Exception(f"Ошибка Mistral: {str(e)}")
+        raise Exception(f"Ошибка связи: {str(e)}")
 
 domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
 
 if 'result' not in st.session_state:
     st.session_state.result = ""
 
-# Основной анализ (твой старый промпт)
+# 1. Основной анализ конкурентов
 if st.button("Провести анализ"):
     if domain:
-        with st.spinner("Анализирую..."):
+        with st.spinner("Анализирую конкурентов..."):
             try:
                 prompt = f"""
-Ты аналитик сайтов. Отвечай строго по пунктам, коротко.
-Используй browse_page для проверки сайтов.
+Ты аналитик сайтов. Отвечай ТОЛЬКО по пунктам, коротко.
+ОБЯЗАТЕЛЬНО используй browse_page для проверки каждого сайта конкурента.
+- Исключай мёртвые сайты.
+- Выдавай только живые, реальные конкуренты похожего масштаба.
+- В пункте 7 — ТОЛЬКО 10 чистых ссылок!
 
-Пункты:
 1. Коммерческий или некоммерческий?
-2. Страна, регион/город
+2. Страна, регион/город:
 3. По всей стране или локально?
-4. Топ-10 запросов
-5. 10 конкурентов (коротко)
-6. Мессенджеры (%)
+4. Топ-10 запросов:
+5. 10 конкурентов (коротко):
+6. Мессенджеры (%):
 7. Конкуренты (только 10 ссылок):
    - https://site1.ru
    - https://site2.ru
    ...
-8. Противоречия
+8. Противоречия:
 
-Анализируй: {domain}
+Домен: {domain}
 """
                 messages = [{"role": "user", "content": prompt}]
                 resp = call_mistral(messages, use_tools=True)
@@ -87,28 +98,58 @@ if st.button("Провести анализ"):
     else:
         st.warning("Введи домен")
 
-# Кнопка 3 аудит
+# 2. Переделай только пункт 7
+if st.session_state.result and st.button("Переделай пункт 7 (конкуренты)"):
+    with st.spinner("Ищу живых конкурентов..."):
+        try:
+            refine = f"""
+Переделай ТОЛЬКО пункт 7.
+Текущий результат: {st.session_state.result}
+
+Найди 10 живых сайтов прямых конкурентов похожего масштаба.
+Проверь каждый через browse_page.
+Исключай мёртвые.
+Выдай ТОЛЬКО 10 ссылок:
+- https://site1.ru
+- https://site2.ru
+...
+"""
+            messages = [{"role": "user", "content": refine}]
+            resp = call_mistral(messages, use_tools=True)
+            new_content = resp.get('content', 'Нет ответа')
+
+            # Заменяем пункт 7
+            old = st.session_state.result
+            if "7." in old:
+                parts = old.split("7.", 1)
+                st.session_state.result = parts[0] + "7." + new_content
+            else:
+                st.session_state.result = old + "\n\n" + new_content
+
+            st.success("Пункт 7 переделан!")
+        except Exception as e:
+            st.error(f"Ошибка: {str(e)}")
+
+# 3. 3 аудит
 if st.button("3 аудит"):
     if domain:
         with st.spinner("Делаю 3 аудит..."):
             try:
                 audit_prompt = f"""
-Проведи "3 аудит" по шаблону. Посети сайт {domain}.
+Проведи "3 аудит" для {domain}. Посети сайт.
 
 Бонусы:
 - Узбекистан: 250 000
 - Казахстан: 10 000
 - Россия: 1 500
 
-Посещаемость: проверь данные сайта.
-Регион: по сайту.
-Запросы: оцени по нише.
+Посещаемость, регион, запросы — оцени по сайту.
 
-Формат ответа:
+Формат:
 URL: {domain}
 Тематика:
 Регион:
-Потенциал запросов в месяц:
+Потенциал запросов:
 Обращения (3–5%):
 Бонус:
 Пояснение:
@@ -122,24 +163,23 @@ URL: {domain}
     else:
         st.warning("Введи домен")
 
-# Кнопка Имиджевый клиент
+# 4. Имиджевый клиент
 if st.button("Имиджевый клиент"):
     if domain:
-        with st.spinner("Проверяю имиджевость..."):
+        with st.spinner("Проверяю..."):
             try:
                 image_prompt = f"""
-Проверь сайт {domain} и ответь одним словом:
+Проверь {domain}. Ответь одним словом:
 
 Имиджевый или Не имиджевый
 
 Критерии имиджевого:
-- Муниципальные учреждения (школы, больницы, администрации)
+- Муниципальные учреждения
 - Известные городские компании
 - Иностранные бренды
 - Публичные личности
 
-Если не соответствует — "Не имиджевый".
-Используй browse_page для проверки.
+Используй browse_page.
 """
 
                 messages = [{"role": "user", "content": image_prompt}]
