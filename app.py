@@ -70,7 +70,7 @@ tools = [
             "description": (
                 "Проверить сайт по URL и вернуть краткий профиль страницы: живая ли она, тема, заголовок, "
                 "описание, ключевые слова и краткий фрагмент текста. Используй для каждого кандидата "
-                "в конкуренты перед тем, как включать его в ответ."
+                "перед тем, как включать его в ответ."
             ),
             "parameters": {
                 "type": "object",
@@ -86,7 +86,7 @@ SITE_SUMMARY_PROMPT = """
 
 {site_summary}
 
-Сделай краткую оценку по пунктам 1-4 и 6. Не выдумывай недоступные факты, а там где уверенности нет — так и укажи.
+Сделай краткую оценку по пунктам 1-4 и 6. Не выдумывай недоступные факты, а там где уверенности нет — прямо укажи, что это предположение или данных недостаточно.
 
 Структура ответа строго такая:
 1. Коммерческий или некоммерческий?
@@ -96,18 +96,56 @@ SITE_SUMMARY_PROMPT = """
 6. Мессенджеры (%):
 """
 
-CANDIDATE_PROMPT = """
-Ты ищешь кандидатов в прямые конкуренты для сайта {domain}.
+DIRECT_CANDIDATE_PROMPT = """
+Ты ищешь кандидатов в ТОЧНЫЕ (прямые) конкуренты для сайта {domain}.
 Ниже профиль нашего сайта:
 
 {site_summary}
 
+Кого считать точным конкурентом:
+- сайт предлагает очень похожие товары, услуги или основной продукт;
+- у сайта схожий коммерческий сценарий;
+- сайт борется за ту же аудиторию с очень близким предложением;
+- сайт похож по тематике, структуре предложения и намерению пользователя.
+
 Правила:
-- Ищи сайты максимально похожей тематики и масштаба.
-- Исключай маркетплейсы, агрегаторы, доски объявлений, соцсети, каталоги франшиз и гигантов вне нашей ниши.
+- Ищи именно прямых конкурентов, максимально близких по смыслу.
+- Приоритет: сходство продукта/услуги, целевой аудитории, сценария выбора, масштаба.
+- Исключай маркетплейсы, агрегаторы, доски объявлений, соцсети, каталоги франшиз, справочники, новостные порталы и гигантов вне нашей ниши.
 - Для каждого кандидата обязательно используй инструмент browse_page.
-- Оставляй только сайты, по содержимому которых видно похожие товары/услуги.
-- Верни только список из 15-20 корневых URL, по одному на строку, без пояснений.
+- Оставляй только сайты, по содержимому которых явно видно очень близкую тематику, похожий продукт/услугу и схожую коммерческую модель.
+- Не добавляй сайты, если сходство слабое или косвенное.
+- Отдавай предпочтение самостоятельным сайтам компаний/сервисов, а не витринам и сборникам.
+- Верни только список из 12-18 корневых URL, по одному на строку, без пояснений и без нумерации.
+"""
+
+INDIRECT_CANDIDATE_PROMPT = """
+Ты ищешь кандидатов в КОСВЕННЫЕ / РАСШИРЕННЫЕ конкуренты для сайта {domain}.
+Ниже профиль нашего сайта:
+
+{site_summary}
+
+Кого считать косвенным / расширенным конкурентом:
+- сайт работает в смежной нише;
+- сайт решает ту же или близкую задачу другим способом;
+- сайт закрывает ту же потребность другим продуктом, форматом или моделью;
+- сайт частично пересекается по аудитории;
+- сайт может быть альтернативой в выборе клиента, даже если это не прямой аналог;
+- сайт конкурирует за тот же спрос, намерение пользователя, бюджет или внимание аудитории;
+- сайт может быть выбран клиентом вместо нашего сайта как другой способ решить похожую проблему.
+
+Правила:
+- Нужны именно косвенные, смежные, расширенные конкуренты.
+- НЕ ограничивайся только сайтами, которые почти полностью совпадают с нашим сайтом.
+- Ищи более широко: по смежной тематике, по альтернативному способу решения задачи, по общей аудитории, по близкой потребности.
+- НЕ предлагай прямых конкурентов, если они слишком буквально совпадают с сайтом.
+- Исключай маркетплейсы, агрегаторы, доски объявлений, соцсети, каталоги франшиз, справочники и слишком общие порталы.
+- Для каждого кандидата обязательно используй инструмент browse_page.
+- Оставляй сайты, у которых есть заметная смысловая, продуктовая, аудиторная или поведенческая близость к нашему сайту.
+- Если прямых косвенных аналогов мало, всё равно расширь поиск за счёт смежных решений, альтернативных сервисов и сайтов с пересечением по потребности.
+- Старайся вернуть минимум 15-20 кандидатов, чтобы среди них можно было отобрать не менее 5 хороших косвенных конкурентов.
+- Не добавляй заведомо нерелевантные или слишком общие сайты только ради количества.
+- Верни только список из 15-20 корневых URL, по одному на строку, без пояснений и без нумерации.
 """
 
 FINAL_REPORT_PROMPT = """
@@ -119,8 +157,11 @@ FINAL_REPORT_PROMPT = """
 Черновик анализа:
 {site_outline}
 
-Проверенные и релевантные конкуренты:
-{verified_json}
+Проверенные точные конкуренты:
+{verified_direct_json}
+
+Проверенные косвенные конкуренты:
+{verified_indirect_json}
 
 Отклонённые кандидаты:
 {rejected_json}
@@ -130,21 +171,25 @@ FINAL_REPORT_PROMPT = """
 2. Страна, регион/город:
 3. По всей стране или локально?
 4. Топ-10 запросов:
-5. 10 конкурентов (коротко: живой? тематика? масштаб? релевантность?):
+5. Точные конкуренты (коротко: живой? тематика? масштаб? релевантность?):
 6. Мессенджеры (%):
-7. Конкуренты (только 10 ссылок):
-   - https://site1.ru
-   - https://site2.ru
-8. Противоречия / отсутствие данных:
+7. Точные конкуренты (ссылки):
+8. Косвенные / расширенные конкуренты (минимум 5, если удалось найти):
+9. Косвенные / расширенные конкуренты (ссылки):
+10. Противоречия / отсутствие данных:
 
 Правила:
-- В пункте 5 перечисляй только проверенные релевантные сайты из блока verified_json.
-- В пункте 7 укажи только проверенные ссылки из verified_json.
-- Если проверенных сайтов меньше 10, честно так и напиши.
-- В пункте 8 укажи, какие кандидаты были отброшены и почему.
-- Отвечай коротко и по делу.
+- Используй только сайты из переданных проверенных списков.
+- В пунктах 5 и 7 перечисляй только проверенные точные конкуренты.
+- В пунктах 8 и 9 перечисляй только проверенные косвенные / расширенные конкуренты.
+- Не смешивай точных и косвенных конкурентов между собой.
+- Для косвенных конкурентов кратко показывай, почему они подходят: смежная ниша, альтернативное решение, пересечение по аудитории или по потребности.
+- Если косвенных меньше 5, честно укажи это.
+- Если точных или косвенных конкурентов меньше желаемого количества, прямо напиши, что проверенно найдено меньше сайтов.
+- В пункте 10 укажи, какие кандидаты были отброшены и почему.
+- Не выдумывай дополнительные компании, ссылки, географию, запросы или факты, которых нет в исходных данных.
+- Отвечай коротко, конкретно и по делу.
 """
-
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
@@ -398,15 +443,6 @@ def compare_profiles(our_profile: dict, candidate_profile: dict) -> dict:
     elif scale_score < 0.45:
         scale_comment = "масштаб отличается"
 
-    is_relevant = bool(
-        final_score >= 20
-        and (
-            len(shared_keywords) >= 2
-            or body_cosine >= 0.10
-            or header_overlap >= 0.08
-        )
-    )
-
     reason = (
         f"Совпавшие ключи: {', '.join(shared_keywords[:6])}."
         if shared_keywords
@@ -423,8 +459,32 @@ def compare_profiles(our_profile: dict, candidate_profile: dict) -> dict:
         "scale_comment": scale_comment,
         "shared_keywords": shared_keywords,
         "reason": reason,
-        "is_relevant": is_relevant,
     }
+
+
+def classify_competitor(comparison: dict) -> str | None:
+    score = comparison["score"]
+    shared_count = len(comparison["shared_keywords"])
+    body_cosine = comparison["body_cosine"]
+    header_overlap = comparison["header_overlap"]
+
+    # Точный конкурент
+    if score >= 24 and (
+        shared_count >= 3
+        or body_cosine >= 0.12
+        or header_overlap >= 0.10
+    ):
+        return "direct"
+
+    # Косвенный / расширенный конкурент
+    if score >= 12 and (
+        shared_count >= 1
+        or body_cosine >= 0.06
+        or header_overlap >= 0.05
+    ):
+        return "indirect"
+
+    return None
 
 
 def is_blocked_domain(domain: str) -> bool:
@@ -469,6 +529,31 @@ def extract_candidate_urls(text: str) -> list[str]:
         candidates.append(url)
     return candidates
 
+
+def dedupe_urls(urls: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for raw in urls:
+        url = normalize_root_url(raw)
+        domain = get_domain_key(url)
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        result.append(url)
+    return result
+
+
+def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
+    result = []
+    seen = set()
+    for raw in urls:
+        url = normalize_root_url(raw)
+        domain = get_domain_key(url)
+        if not domain or domain in excluded_domains or domain in seen:
+            continue
+        seen.add(domain)
+        result.append(url)
+    return result
 
 
 def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: float = 0.3, max_tokens: int = 4096) -> dict:
@@ -546,17 +631,26 @@ def get_site_outline(our_profile: dict) -> str:
     ).get("content", "")
 
 
-def get_candidate_domains(domain: str, our_profile: dict) -> list[str]:
-    prompt = CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
+def get_candidate_domains(domain: str, our_profile: dict, competitor_type: str, excluded_domains: set[str] | None = None) -> list[str]:
+    excluded_domains = excluded_domains or set()
+
+    if competitor_type == "direct":
+        prompt = DIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
+    else:
+        prompt = INDIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
+
     content = complete_with_tools(
         [{"role": "user", "content": prompt}],
         temperature=0.2,
-        max_tokens=1600,
+        max_tokens=1800,
     )
-    return extract_candidate_urls(content)
+    urls = extract_candidate_urls(content)
+    urls = dedupe_urls(urls)
+    urls = exclude_domains(urls, excluded_domains)
+    return urls
 
 
-def verify_competitors(our_profile: dict, candidate_urls: list[str]) -> tuple[list[dict], list[dict]]:
+def verify_competitors(our_profile: dict, candidate_urls: list[str], target_type: str) -> tuple[list[dict], list[dict]]:
     verified = []
     rejected = []
     seen_domains = set()
@@ -569,19 +663,25 @@ def verify_competitors(our_profile: dict, candidate_urls: list[str]) -> tuple[li
         seen_domains.add(domain)
 
         if domain == our_profile.get("domain"):
-            rejected.append({"url": url, "reason": "Это наш собственный сайт"})
+            rejected.append({"url": url, "reason": "Это наш собственный сайт", "type": target_type})
             continue
 
         if is_blocked_domain(domain):
-            rejected.append({"url": url, "reason": "Маркетплейс / агрегатор"})
+            rejected.append({"url": url, "reason": "Маркетплейс / агрегатор", "type": target_type})
             continue
 
         candidate_profile = fetch_site_profile(url)
         if not candidate_profile.get("ok"):
-            rejected.append({"url": url, "reason": f"Недоступен: {candidate_profile.get('issue', 'ошибка')}"})
+            rejected.append({
+                "url": url,
+                "reason": f"Недоступен: {candidate_profile.get('issue', 'ошибка')}",
+                "type": target_type,
+            })
             continue
 
         comparison = compare_profiles(our_profile, candidate_profile)
+        actual_type = classify_competitor(comparison)
+
         record = {
             "url": candidate_profile["final_url"],
             "domain": candidate_profile["domain"],
@@ -594,62 +694,145 @@ def verify_competitors(our_profile: dict, candidate_urls: list[str]) -> tuple[li
             "shared_keywords": comparison["shared_keywords"],
             "scale_comment": comparison["scale_comment"],
             "reason": comparison["reason"],
+            "competitor_type": actual_type or "rejected",
         }
 
-        if comparison["is_relevant"]:
-            verified.append(record)
+        if target_type == "direct":
+            if actual_type == "direct":
+                verified.append(record)
+            else:
+                rejected.append(
+                    {
+                        "url": candidate_profile["final_url"],
+                        "reason": (
+                            f"Не прошёл как точный конкурент ({comparison['score']}%). "
+                            f"{comparison['reason']} {comparison['scale_comment']}"
+                        ),
+                        "type": "direct",
+                    }
+                )
         else:
-            rejected.append(
-                {
-                    "url": candidate_profile["final_url"],
-                    "reason": (
-                        f"Низкая релевантность ({comparison['score']}%). "
-                        f"{comparison['reason']} {comparison['scale_comment']}"
-                    ),
-                }
-            )
+            if actual_type == "indirect":
+                verified.append(record)
+            elif actual_type == "direct":
+                rejected.append(
+                    {
+                        "url": candidate_profile["final_url"],
+                        "reason": (
+                            f"Слишком близок к прямому конкуренту ({comparison['score']}%), "
+                            f"поэтому не включён в косвенные."
+                        ),
+                        "type": "indirect",
+                    }
+                )
+            else:
+                rejected.append(
+                    {
+                        "url": candidate_profile["final_url"],
+                        "reason": (
+                            f"Недостаточная тематическая близость для косвенного конкурента "
+                            f"({comparison['score']}%). {comparison['reason']} {comparison['scale_comment']}"
+                        ),
+                        "type": "indirect",
+                    }
+                )
 
     verified.sort(key=lambda item: item["score"], reverse=True)
-    return verified[:10], rejected
+    return verified, rejected
 
 
-def build_final_report(our_profile: dict, site_outline: str, verified: list[dict], rejected: list[dict]) -> str:
-    verified_json = json.dumps(verified[:10], ensure_ascii=False, indent=2)
-    rejected_json = json.dumps(rejected[:15], ensure_ascii=False, indent=2)
+def ensure_min_indirect(domain: str, our_profile: dict, direct_verified: list[dict], indirect_verified: list[dict], rejected: list[dict]) -> tuple[list[dict], list[dict]]:
+    if len(indirect_verified) >= 5:
+        return indirect_verified, rejected
+
+    excluded_domains = {our_profile.get("domain", "")}
+    excluded_domains.update(item["domain"] for item in direct_verified)
+    excluded_domains.update(item["domain"] for item in indirect_verified if item.get("domain"))
+
+    extra_candidates = get_candidate_domains(
+        domain,
+        our_profile,
+        competitor_type="indirect",
+        excluded_domains=excluded_domains,
+    )
+    extra_verified, extra_rejected = verify_competitors(our_profile, extra_candidates, "indirect")
+
+    existing_domains = {item["domain"] for item in indirect_verified}
+    for item in extra_verified:
+        if item["domain"] not in existing_domains:
+            indirect_verified.append(item)
+            existing_domains.add(item["domain"])
+
+    rejected.extend(extra_rejected)
+    indirect_verified.sort(key=lambda item: item["score"], reverse=True)
+    return indirect_verified, rejected
+
+
+def build_final_report(
+    our_profile: dict,
+    site_outline: str,
+    verified_direct: list[dict],
+    verified_indirect: list[dict],
+    rejected: list[dict],
+) -> str:
+    verified_direct_json = json.dumps(verified_direct[:10], ensure_ascii=False, indent=2)
+    verified_indirect_json = json.dumps(verified_indirect[:10], ensure_ascii=False, indent=2)
+    rejected_json = json.dumps(rejected[:20], ensure_ascii=False, indent=2)
+
     prompt = FINAL_REPORT_PROMPT.format(
         site_summary=summarize_profile(our_profile),
         site_outline=site_outline or "Нет черновика анализа",
-        verified_json=verified_json,
+        verified_direct_json=verified_direct_json,
+        verified_indirect_json=verified_indirect_json,
         rejected_json=rejected_json,
     )
     report = call_mistral(
         [{"role": "user", "content": prompt}],
         use_tools=False,
         temperature=0.25,
-        max_tokens=2500,
+        max_tokens=3000,
     ).get("content", "")
-    report = replace_section(report, 5, build_section_5(verified))
-    report = replace_section(report, 7, build_section_7(verified))
-    report = replace_section(report, 8, build_section_8(rejected))
+
+    report = replace_section(report, 5, build_section_5_direct(verified_direct))
+    report = replace_section(report, 7, build_section_7_direct(verified_direct))
+    report = replace_section(report, 8, build_section_8_indirect(verified_indirect))
+    report = replace_section(report, 9, build_section_9_indirect(verified_indirect))
+    report = replace_section(report, 10, build_section_10(rejected))
     return report
 
 
-def build_validation_rows(verified: list[dict], rejected: list[dict]) -> list[dict]:
+def build_validation_rows(verified_direct: list[dict], verified_indirect: list[dict], rejected: list[dict]) -> list[dict]:
     rows = []
-    for item in verified:
+
+    for item in verified_direct:
         rows.append(
             {
                 "URL": item["url"],
+                "Тип": "Точный",
                 "Статус": "OK",
                 "Релевантность": f"{item['score']}% ({item['relevance']})",
-                "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]),
+                "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
                 "Комментарий": item.get("scale_comment", ""),
             }
         )
+
+    for item in verified_indirect:
+        rows.append(
+            {
+                "URL": item["url"],
+                "Тип": "Косвенный",
+                "Статус": "OK",
+                "Релевантность": f"{item['score']}% ({item['relevance']})",
+                "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
+                "Комментарий": item.get("scale_comment", ""),
+            }
+        )
+
     for item in rejected:
         rows.append(
             {
                 "URL": item.get("url", ""),
+                "Тип": "Отклонён",
                 "Статус": "Отклонён",
                 "Релевантность": "—",
                 "Совпадения": "—",
@@ -659,34 +842,68 @@ def build_validation_rows(verified: list[dict], rejected: list[dict]) -> list[di
     return rows
 
 
-def run_full_analysis(domain: str) -> tuple[str, dict, list[dict], list[dict]]:
+def run_full_analysis(domain: str) -> tuple[str, dict, list[dict], list[dict], list[dict]]:
     our_profile = fetch_site_profile(domain)
     if not our_profile.get("ok"):
         raise RuntimeError(f"Не удалось открыть наш сайт: {our_profile.get('issue', 'ошибка')}")
 
     site_outline = get_site_outline(our_profile)
-    candidates = get_candidate_domains(domain, our_profile)
-    if not candidates:
+
+    direct_candidates = get_candidate_domains(domain, our_profile, competitor_type="direct")
+    indirect_candidates = get_candidate_domains(domain, our_profile, competitor_type="indirect")
+
+    if not direct_candidates and not indirect_candidates:
         raise RuntimeError("Не удалось получить список кандидатов в конкуренты")
 
-    verified, rejected = verify_competitors(our_profile, candidates)
-    report = build_final_report(our_profile, site_outline, verified, rejected)
-    return report, our_profile, verified, rejected
+    verified_direct, rejected_direct = verify_competitors(our_profile, direct_candidates, "direct")
+
+    direct_domains = {item["domain"] for item in verified_direct}
+    indirect_candidates = exclude_domains(indirect_candidates, direct_domains)
+    verified_indirect, rejected_indirect = verify_competitors(our_profile, indirect_candidates, "indirect")
+
+    rejected = rejected_direct + rejected_indirect
+    verified_indirect, rejected = ensure_min_indirect(domain, our_profile, verified_direct, verified_indirect, rejected)
+
+    verified_direct = verified_direct[:10]
+    verified_indirect = verified_indirect[:10]
+
+    report = build_final_report(
+        our_profile,
+        site_outline,
+        verified_direct,
+        verified_indirect,
+        rejected,
+    )
+    return report, our_profile, verified_direct, verified_indirect, rejected
 
 
-def render_validation_table(verified: list[dict], rejected: list[dict]) -> None:
-    rows = build_validation_rows(verified, rejected)
+def render_validation_table(verified_direct: list[dict], verified_indirect: list[dict], rejected: list[dict]) -> None:
+    rows = build_validation_rows(verified_direct, verified_indirect, rejected)
     if not rows:
         return
 
     st.subheader("Проверка найденных доменов")
-    st.caption("Сначала проверяется доступность сайта, затем сходство тематики и примерный масштаб относительно нашего сайта.")
+    st.caption(
+        "Сначала проверяется доступность сайта, затем сходство тематики и примерный масштаб. "
+        "Точные и косвенные конкуренты показываются отдельно."
+    )
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
-def rerun_competitors_only(domain: str, our_profile: dict) -> tuple[list[dict], list[dict]]:
-    candidates = get_candidate_domains(domain, our_profile)
-    return verify_competitors(our_profile, candidates)
+def rerun_competitors_only(domain: str, our_profile: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    direct_candidates = get_candidate_domains(domain, our_profile, competitor_type="direct")
+    indirect_candidates = get_candidate_domains(domain, our_profile, competitor_type="indirect")
+
+    verified_direct, rejected_direct = verify_competitors(our_profile, direct_candidates, "direct")
+    direct_domains = {item["domain"] for item in verified_direct}
+
+    indirect_candidates = exclude_domains(indirect_candidates, direct_domains)
+    verified_indirect, rejected_indirect = verify_competitors(our_profile, indirect_candidates, "indirect")
+
+    rejected = rejected_direct + rejected_indirect
+    verified_indirect, rejected = ensure_min_indirect(domain, our_profile, verified_direct, verified_indirect, rejected)
+
+    return verified_direct[:10], verified_indirect[:10], rejected
 
 
 def replace_section(text: str, section_number: int, new_section: str) -> str:
@@ -697,13 +914,13 @@ def replace_section(text: str, section_number: int, new_section: str) -> str:
     return text[: match.start()] + new_section.strip() + "\n\n" + text[match.end() :].lstrip()
 
 
-def build_section_5(verified: list[dict]) -> str:
-    lines = ["5. 10 конкурентов (коротко: живой? тематика? масштаб? релевантность?):"]
-    if not verified:
-        lines.append("- Проверенных релевантных конкурентов не найдено.")
+def build_section_5_direct(verified_direct: list[dict]) -> str:
+    lines = ["5. Точные конкуренты (коротко: живой? тематика? масштаб? релевантность?):"]
+    if not verified_direct:
+        lines.append("- Проверенных точных конкурентов не найдено.")
         return "\n".join(lines)
 
-    for item in verified[:10]:
+    for item in verified_direct[:10]:
         shared = ", ".join(item.get("shared_keywords", [])[:4]) or "мало общих терминов"
         lines.append(
             f"- {item['url']} — живой, релевантность {item['score']}%, {item['scale_comment']}, совпадения: {shared}."
@@ -711,34 +928,61 @@ def build_section_5(verified: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_section_7(verified: list[dict]) -> str:
-    lines = ["7. Конкуренты (только 10 ссылок):"]
-    if not verified:
+def build_section_7_direct(verified_direct: list[dict]) -> str:
+    lines = ["7. Точные конкуренты (ссылки):"]
+    if not verified_direct:
         lines.append("- Проверенных ссылок нет")
         return "\n".join(lines)
-    for item in verified[:10]:
+    for item in verified_direct[:10]:
         lines.append(f"- {item['url']}")
     return "\n".join(lines)
 
 
-def build_section_8(rejected: list[dict]) -> str:
-    lines = ["8. Противоречия / отсутствие данных:"]
+def build_section_8_indirect(verified_indirect: list[dict]) -> str:
+    lines = ["8. Косвенные / расширенные конкуренты (минимум 5, если удалось найти):"]
+    if not verified_indirect:
+        lines.append("- Проверенных косвенных конкурентов не найдено.")
+        return "\n".join(lines)
+
+    if len(verified_indirect) < 5:
+        lines.append(f"- Найдено меньше 5 косвенных конкурентов: {len(verified_indirect)}.")
+
+    for item in verified_indirect[:10]:
+        shared = ", ".join(item.get("shared_keywords", [])[:4]) or "мало общих терминов"
+        lines.append(
+            f"- {item['url']} — косвенный конкурент, релевантность {item['score']}%, {item['scale_comment']}, совпадения: {shared}."
+        )
+    return "\n".join(lines)
+
+
+def build_section_9_indirect(verified_indirect: list[dict]) -> str:
+    lines = ["9. Косвенные / расширенные конкуренты (ссылки):"]
+    if not verified_indirect:
+        lines.append("- Проверенных ссылок нет")
+        return "\n".join(lines)
+    for item in verified_indirect[:10]:
+        lines.append(f"- {item['url']}")
+    return "\n".join(lines)
+
+
+def build_section_10(rejected: list[dict]) -> str:
+    lines = ["10. Противоречия / отсутствие данных:"]
     if not rejected:
         lines.append("- Явных противоречий нет, проверенные конкуренты прошли фильтр живости и релевантности.")
         return "\n".join(lines)
-    for item in rejected[:10]:
+    for item in rejected[:15]:
         lines.append(f"- {item.get('url', 'кандидат без URL')} — {item.get('reason', 'нет данных')}")
     return "\n".join(lines)
 
 
-def render_copyable_domains(verified: list[dict]) -> None:
-    if not verified:
+def render_copyable_domains(title: str, competitors: list[dict]) -> None:
+    if not competitors:
         return
 
-    st.subheader("Домены конкурентов")
+    st.subheader(title)
     st.caption("Можно открыть сайт или скопировать только домен.")
 
-    for index, item in enumerate(verified[:10], start=1):
+    for index, item in enumerate(competitors[:10], start=1):
         url = item.get("url", "")
         domain = item.get("domain") or get_domain_key(url)
 
@@ -786,8 +1030,10 @@ if "result" not in st.session_state:
     st.session_state.result = ""
 if "our_profile" not in st.session_state:
     st.session_state.our_profile = None
-if "verified_competitors" not in st.session_state:
-    st.session_state.verified_competitors = []
+if "verified_direct_competitors" not in st.session_state:
+    st.session_state.verified_direct_competitors = []
+if "verified_indirect_competitors" not in st.session_state:
+    st.session_state.verified_indirect_competitors = []
 if "rejected_competitors" not in st.session_state:
     st.session_state.rejected_competitors = []
 if "last_domain" not in st.session_state:
@@ -799,12 +1045,13 @@ if st.button("Провести анализ"):
     elif not api_key:
         st.warning("Не найден Mistral API key в st.secrets или переменных окружения")
     else:
-        with st.spinner("Анализирую и проверяю релевантность конкурентов..."):
+        with st.spinner("Анализирую и проверяю точных и косвенных конкурентов..."):
             try:
-                result, our_profile, verified, rejected = run_full_analysis(domain)
+                result, our_profile, verified_direct, verified_indirect, rejected = run_full_analysis(domain)
                 st.session_state.result = result
                 st.session_state.our_profile = our_profile
-                st.session_state.verified_competitors = verified
+                st.session_state.verified_direct_competitors = verified_direct
+                st.session_state.verified_indirect_competitors = verified_indirect
                 st.session_state.rejected_competitors = rejected
                 st.session_state.last_domain = domain
             except Exception as exc:
@@ -818,12 +1065,16 @@ if st.session_state.result and st.button("Обновить список конк
     else:
         with st.spinner("Перепроверяю конкурентов..."):
             try:
-                verified, rejected = rerun_competitors_only(saved_domain, our_profile)
-                updated = replace_section(st.session_state.result, 5, build_section_5(verified))
-                updated = replace_section(updated, 7, build_section_7(verified))
-                updated = replace_section(updated, 8, build_section_8(rejected))
+                verified_direct, verified_indirect, rejected = rerun_competitors_only(saved_domain, our_profile)
+                updated = replace_section(st.session_state.result, 5, build_section_5_direct(verified_direct))
+                updated = replace_section(updated, 7, build_section_7_direct(verified_direct))
+                updated = replace_section(updated, 8, build_section_8_indirect(verified_indirect))
+                updated = replace_section(updated, 9, build_section_9_indirect(verified_indirect))
+                updated = replace_section(updated, 10, build_section_10(rejected))
+
                 st.session_state.result = updated
-                st.session_state.verified_competitors = verified
+                st.session_state.verified_direct_competitors = verified_direct
+                st.session_state.verified_indirect_competitors = verified_indirect
                 st.session_state.rejected_competitors = rejected
                 st.success("Список конкурентов обновлён")
             except Exception as exc:
@@ -833,9 +1084,17 @@ if st.session_state.result:
     st.subheader("Результат анализа")
     st.markdown(st.session_state.result, unsafe_allow_html=True)
 
-    render_copyable_domains(st.session_state.verified_competitors)
+    render_copyable_domains(
+        "Точные конкуренты",
+        st.session_state.verified_direct_competitors,
+    )
+    render_copyable_domains(
+        "Косвенные / расширенные конкуренты",
+        st.session_state.verified_indirect_competitors,
+    )
 
     render_validation_table(
-        st.session_state.verified_competitors,
+        st.session_state.verified_direct_competitors,
+        st.session_state.verified_indirect_competitors,
         st.session_state.rejected_competitors,
     )
