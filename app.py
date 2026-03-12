@@ -181,3 +181,4 @@ if st.session_state.result and st.button("Переделай пункт 7 (ко�
 if st.session_state.result:
     st.subheader("Результат анализа:")
     st.markdown(st.session_state.result, unsafe_allow_html=True)
+
