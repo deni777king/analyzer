@@ -5,8 +5,8 @@ import json
 
 st.title("Конкурентный Анализатор")
 
-# Новый ключ встроен напрямую (без поля ввода)
-api_key = "T1vc64LyPyUJ1rnvURqbYGidATIiSIje"
+# Ключ встроен напрямую
+api_key = "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR"
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 
@@ -48,73 +48,15 @@ def call_mistral(messages, use_tools=False):
         r = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]
-    except requests.exceptions.HTTPError as e:
-        if r.status_code == 429:
-            st.error("Лимит запросов исчерпан. Подождите 10–20 минут или пополните баланс в https://console.mistral.ai/billing")
-            st.stop()
-        elif r.status_code == 401 or r.status_code == 403:
-            st.error("Неверный или заблокированный API-ключ.")
-            st.stop()
-        elif r.status_code == 502 or r.status_code == 503:
-            st.error("Сервер временно недоступен (502/503). Попробуйте позже.")
-            st.stop()
-        else:
-            st.error(f"Mistral HTTP ошибка {r.status_code}: {r.text}")
-            st.stop()
-    except requests.exceptions.Timeout:
-        st.error("Таймаут соединения. Проверьте интернет.")
-        st.stop()
     except Exception as e:
-        st.error(f"Ошибка связи: {str(e)}")
+        st.error(f"Ошибка Mistral: {str(e)}")
         st.stop()
 
-domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
-
-if 'result' not in st.session_state:
-    st.session_state.result = ""
-
-# Улучшенный промпт для основного анализа
-base_prompt = """
-Ты аналитик сайтов. Отвечай ТОЛЬКО по пунктам, коротко, без лишнего текста.
-ОБЯЗАТЕЛЬНО используй инструмент browse_page для проверки КАЖДОГО сайта конкурента.
-- Проверяй каждый URL: если сайт мёртвый, недоступный, пустой или не релевантный — ИСКЛЮЧАЙ его полностью.
-- Выдавай только живые, реальные и прямые конкуренты (похожего масштаба, тематики и региона).
-- Сравнивай с нашим сайтом по тематике, размеру компании и зоне работы.
-- В пункте 7 выдай ТОЛЬКО 10 чистых кликабельных ссылок на живых конкурентов, без описаний и текста!
-
-Структура ответа строго такая:
-
-1. Коммерческий или некоммерческий?
-2. Страна, регион/город:
-3. По всей стране или локально?
-4. Топ-10 запросов:
-5. 10 конкурентов (коротко: живой? тематика? масштаб?):
-6. Мессенджеры (%):
-7. Конкуренты (только 10 ссылок):
-   - https://site1.ru
-   - https://site2.ru
-   ...
-8. Противоречия / отсутствие данных:
-
-Анализируй домен: {domain}
-"""
-
-# Улучшенный промпт для переделки пункта 7
-refine_prompt_template = """
-Переделай ТОЛЬКО пункт 7.
-Текущий результат: {result}
-
-Найди 10 живых, рабочих сайтов прямых конкурентов похожего масштаба и тематики.
-ОБЯЗАТЕЛЬНО проверь КАЖДЫЙ сайт через browse_page.
-Исключай все мёртвые, недоступные, пустые или нерелевантные сайты.
-Выдай ТОЛЬКО 10 чистых кликабельных ссылок, без описаний и текста!
-Формат:
-- https://site1.ru
-- https://site2.ru
-...
-"""
-
-domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
+# Поле ввода домена с уникальным ключом (это решает ошибку DuplicateElementId)
+domain = st.text_input(
+    "Введи домен сайта (например, zaryadiavto.ru):",
+    key="domain_input"
+)
 
 if 'result' not in st.session_state:
     st.session_state.result = ""
@@ -125,7 +67,27 @@ if st.button("Провести анализ"):
         st.session_state.result = ""
         with st.spinner("Анализирую конкурентов..."):
             try:
-                prompt = base_prompt.format(domain=domain)
+                prompt = f"""
+Ты аналитик сайтов. Отвечай строго по пунктам, коротко.
+ОБЯЗАТЕЛЬНО используй browse_page для проверки каждого сайта конкурента.
+- Исключай мёртвые сайты.
+- Выдавай только живые, реальные конкуренты похожего масштаба.
+- В пункте 7 — ТОЛЬКО 10 чистых ссылок!
+
+1. Коммерческий или некоммерческий?
+2. Страна, регион/город:
+3. По всей стране или локально?
+4. Топ-10 запросов:
+5. 10 конкурентов (коротко):
+6. Мессенджеры (%):
+7. Конкуренты (только 10 ссылок):
+   - https://site1.ru
+   - https://site2.ru
+   ...
+8. Противоречия:
+
+Домен: {domain}
+"""
                 messages = [{"role": "user", "content": prompt}]
                 while True:
                     resp = call_mistral(messages, use_tools=True)
@@ -165,8 +127,19 @@ if st.button("Провести анализ"):
 if st.session_state.result and st.button("Переделай пункт 7 (конкуренты)"):
     with st.spinner("Ищу живых конкурентов..."):
         try:
-            refine_prompt = refine_prompt_template.format(result=st.session_state.result)
-            messages = [{"role": "user", "content": refine_prompt}]
+            refine = f"""
+Переделай ТОЛЬКО пункт 7.
+Текущий результат: {st.session_state.result}
+
+Найди 10 живых сайтов конкурентов похожего масштаба.
+Проверь каждый через browse_page.
+Исключай мёртвые.
+Выдай ТОЛЬКО 10 ссылок:
+- https://site1.ru
+- https://site2.ru
+...
+"""
+            messages = [{"role": "user", "content": refine}]
             resp = call_mistral(messages, use_tools=True)
             new_content = resp.get('content', 'Нет ответа')
 
