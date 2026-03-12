@@ -55,9 +55,9 @@ def call_mistral(messages, use_tools=False):
             raise Exception("Сервер Mistral временно недоступен. Попробуйте позже.")
         raise Exception(f"Mistral HTTP ошибка {r.status_code}: {r.text}")
     except requests.exceptions.Timeout:
-        raise Exception("Таймаут соединения. Проверьте интернет или подождите.")
+        raise Exception("Таймаут соединения. Проверьте интернет.")
     except Exception as e:
-        raise Exception(f"Ошибка связи с Mistral: {str(e)}")
+        raise Exception(f"Ошибка связи: {str(e)}")
 
 domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
 
@@ -95,7 +95,7 @@ if st.button("Провести анализ"):
                 resp = call_mistral(messages, use_tools=True)
                 st.session_state.result = resp.get('content', 'Нет ответа')
             except Exception as e:
-                st.error(str(e))  # Выводим ошибку явно
+                st.error(str(e))
     else:
         st.warning("Введи домен")
 
