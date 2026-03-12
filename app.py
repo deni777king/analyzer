@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Конкурентный Анализатор", layout="wide")
@@ -58,12 +59,8 @@ def get_default_api_key() -> str:
         return os.getenv("MISTRAL_API_KEY", "").strip()
 
 
-api_key = st.text_input(
-    "Mistral API key",
-    type="password",
-    value=get_default_api_key(),
-    help="Можно передать через st.secrets['MISTRAL_API_KEY'] или переменную окружения MISTRAL_API_KEY.",
-)
+# API ключ оставлен в коде, но поле ввода в интерфейсе убрано
+api_key = "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR"
 
 tools = [
     {
@@ -151,7 +148,6 @@ FINAL_REPORT_PROMPT = """
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
-    """Возвращает профиль сайта для последующего сравнения."""
     variants = build_url_variants(url_or_domain)
     last_error = "Не удалось открыть сайт"
 
@@ -246,7 +242,6 @@ def fetch_site_profile(url_or_domain: str) -> dict:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def browse_page(url: str) -> str:
-    """Функция-инструмент для Mistral. Возвращает JSON с кратким профилем сайта."""
     profile = fetch_site_profile(url)
     payload = {
         "live": profile["live"],
@@ -260,7 +255,6 @@ def browse_page(url: str) -> str:
         "issue": profile["issue"],
     }
     return json.dumps(payload, ensure_ascii=False)
-
 
 
 def build_url_variants(value: str) -> list[str]:
@@ -283,7 +277,6 @@ def build_url_variants(value: str) -> list[str]:
     return list(dict.fromkeys(variants))
 
 
-
 def normalize_root_url(value: str) -> str:
     parsed = urlparse(value if value.startswith(("http://", "https://")) else f"https://{value}")
     netloc = parsed.netloc or parsed.path
@@ -291,7 +284,6 @@ def normalize_root_url(value: str) -> str:
     netloc = netloc.replace("http://", "").replace("https://", "")
     netloc = netloc.rstrip("/")
     return f"https://{netloc}"
-
 
 
 def get_domain_key(value: str) -> str:
@@ -304,11 +296,9 @@ def get_domain_key(value: str) -> str:
     return netloc
 
 
-
 def clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text or "")
     return text.strip()
-
 
 
 def count_internal_links(soup: BeautifulSoup, domain: str) -> int:
@@ -321,7 +311,6 @@ def count_internal_links(soup: BeautifulSoup, domain: str) -> int:
         if href_domain == domain:
             count += 1
     return count
-
 
 
 def tokenize(text: str) -> list[str]:
@@ -339,7 +328,6 @@ def tokenize(text: str) -> list[str]:
     return result
 
 
-
 def jaccard_similarity(first: set[str], second: set[str]) -> float:
     if not first or not second:
         return 0.0
@@ -347,7 +335,6 @@ def jaccard_similarity(first: set[str], second: set[str]) -> float:
     if not union:
         return 0.0
     return len(first & second) / len(union)
-
 
 
 def cosine_similarity(counter_a: Counter, counter_b: Counter) -> float:
@@ -360,7 +347,6 @@ def cosine_similarity(counter_a: Counter, counter_b: Counter) -> float:
     if not norm_a or not norm_b:
         return 0.0
     return numerator / (norm_a * norm_b)
-
 
 
 def compare_profiles(our_profile: dict, candidate_profile: dict) -> dict:
@@ -441,13 +427,11 @@ def compare_profiles(our_profile: dict, candidate_profile: dict) -> dict:
     }
 
 
-
 def is_blocked_domain(domain: str) -> bool:
     domain = get_domain_key(domain)
     if domain in MARKETPLACE_BLOCKLIST:
         return True
     return any(domain.endswith(f".{item}") for item in MARKETPLACE_BLOCKLIST)
-
 
 
 def summarize_profile(profile: dict) -> str:
@@ -463,7 +447,6 @@ def summarize_profile(profile: dict) -> str:
         f"Keywords: {keywords}\n"
         f"Фрагмент текста: {snippet}"
     )
-
 
 
 def extract_candidate_urls(text: str) -> list[str]:
@@ -490,7 +473,9 @@ def extract_candidate_urls(text: str) -> list[str]:
 
 def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: float = 0.3, max_tokens: int = 4096) -> dict:
     if not api_key:
-        raise RuntimeError("Не указан Mistral API key")
+        raise RuntimeError(
+            "Не указан Mistral API key. Добавь MISTRAL_API_KEY в st.secrets или в переменные окружения."
+        )
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
@@ -507,10 +492,11 @@ def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: 
     return response.json()["choices"][0]["message"]
 
 
-
 def complete_with_tools(messages: list[dict], *, temperature: float = 0.3, max_tokens: int = 4096) -> str:
     conversation = list(messages)
-    while True:
+    max_rounds = 12
+
+    for _ in range(max_rounds):
         response_message = call_mistral(
             conversation,
             use_tools=True,
@@ -522,6 +508,7 @@ def complete_with_tools(messages: list[dict], *, temperature: float = 0.3, max_t
         if not tool_calls:
             return response_message.get("content", "")
 
+        appended_tool_result = False
         for tool_call in tool_calls:
             func = tool_call.get("function") or {}
             if func.get("name") != "browse_page":
@@ -541,7 +528,12 @@ def complete_with_tools(messages: list[dict], *, temperature: float = 0.3, max_t
                     "content": content,
                 }
             )
+            appended_tool_result = True
 
+        if not appended_tool_result:
+            break
+
+    return "Не удалось завершить обработку tool calls."
 
 
 def get_site_outline(our_profile: dict) -> str:
@@ -554,7 +546,6 @@ def get_site_outline(our_profile: dict) -> str:
     ).get("content", "")
 
 
-
 def get_candidate_domains(domain: str, our_profile: dict) -> list[str]:
     prompt = CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
     content = complete_with_tools(
@@ -563,7 +554,6 @@ def get_candidate_domains(domain: str, our_profile: dict) -> list[str]:
         max_tokens=1600,
     )
     return extract_candidate_urls(content)
-
 
 
 def verify_competitors(our_profile: dict, candidate_urls: list[str]) -> tuple[list[dict], list[dict]]:
@@ -623,7 +613,6 @@ def verify_competitors(our_profile: dict, candidate_urls: list[str]) -> tuple[li
     return verified[:10], rejected
 
 
-
 def build_final_report(our_profile: dict, site_outline: str, verified: list[dict], rejected: list[dict]) -> str:
     verified_json = json.dumps(verified[:10], ensure_ascii=False, indent=2)
     rejected_json = json.dumps(rejected[:15], ensure_ascii=False, indent=2)
@@ -643,7 +632,6 @@ def build_final_report(our_profile: dict, site_outline: str, verified: list[dict
     report = replace_section(report, 7, build_section_7(verified))
     report = replace_section(report, 8, build_section_8(rejected))
     return report
-
 
 
 def build_validation_rows(verified: list[dict], rejected: list[dict]) -> list[dict]:
@@ -671,7 +659,6 @@ def build_validation_rows(verified: list[dict], rejected: list[dict]) -> list[di
     return rows
 
 
-
 def run_full_analysis(domain: str) -> tuple[str, dict, list[dict], list[dict]]:
     our_profile = fetch_site_profile(domain)
     if not our_profile.get("ok"):
@@ -687,7 +674,6 @@ def run_full_analysis(domain: str) -> tuple[str, dict, list[dict], list[dict]]:
     return report, our_profile, verified, rejected
 
 
-
 def render_validation_table(verified: list[dict], rejected: list[dict]) -> None:
     rows = build_validation_rows(verified, rejected)
     if not rows:
@@ -698,20 +684,17 @@ def render_validation_table(verified: list[dict], rejected: list[dict]) -> None:
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
-
 def rerun_competitors_only(domain: str, our_profile: dict) -> tuple[list[dict], list[dict]]:
     candidates = get_candidate_domains(domain, our_profile)
     return verify_competitors(our_profile, candidates)
 
 
-
 def replace_section(text: str, section_number: int, new_section: str) -> str:
-    pattern = re.compile(rf"(?ms)^({section_number}\\..*?)(?=^\\d+\\.|\\Z)")
+    pattern = re.compile(rf"(?ms)^({section_number}\..*?)(?=^\d+\.|\Z)")
     match = pattern.search(text)
     if not match:
         return f"{text}\n\n{new_section}"
     return text[: match.start()] + new_section.strip() + "\n\n" + text[match.end() :].lstrip()
-
 
 
 def build_section_5(verified: list[dict]) -> str:
@@ -728,7 +711,6 @@ def build_section_5(verified: list[dict]) -> str:
     return "\n".join(lines)
 
 
-
 def build_section_7(verified: list[dict]) -> str:
     lines = ["7. Конкуренты (только 10 ссылок):"]
     if not verified:
@@ -737,7 +719,6 @@ def build_section_7(verified: list[dict]) -> str:
     for item in verified[:10]:
         lines.append(f"- {item['url']}")
     return "\n".join(lines)
-
 
 
 def build_section_8(rejected: list[dict]) -> str:
@@ -749,6 +730,54 @@ def build_section_8(rejected: list[dict]) -> str:
         lines.append(f"- {item.get('url', 'кандидат без URL')} — {item.get('reason', 'нет данных')}")
     return "\n".join(lines)
 
+
+def render_copyable_domains(verified: list[dict]) -> None:
+    if not verified:
+        return
+
+    st.subheader("Домены конкурентов")
+    st.caption("Можно открыть сайт или скопировать только домен.")
+
+    for index, item in enumerate(verified[:10], start=1):
+        url = item.get("url", "")
+        domain = item.get("domain") or get_domain_key(url)
+
+        safe_domain = json.dumps(domain, ensure_ascii=False)
+        safe_url = json.dumps(url, ensure_ascii=False)
+
+        html = f"""
+        <div style="
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            padding:10px 12px;
+            border:1px solid #e5e7eb;
+            border-radius:10px;
+            margin-bottom:8px;
+            font-family:Arial, sans-serif;
+        ">
+            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                <span style="font-weight:600;margin-right:8px;">{index}.</span>
+                <a href={safe_url} target="_blank" style="text-decoration:none;color:#2563eb;">
+                    {domain}
+                </a>
+            </div>
+            <button
+                onclick='navigator.clipboard.writeText({safe_domain})'
+                style="
+                    border:1px solid #d1d5db;
+                    border-radius:8px;
+                    padding:6px 10px;
+                    background:#ffffff;
+                    cursor:pointer;
+                "
+            >
+                Копировать
+            </button>
+        </div>
+        """
+        components.html(html, height=64)
 
 
 domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
@@ -768,7 +797,7 @@ if st.button("Провести анализ"):
     if not domain:
         st.warning("Введи домен")
     elif not api_key:
-        st.warning("Укажи Mistral API key")
+        st.warning("Не найден Mistral API key в st.secrets или переменных окружения")
     else:
         with st.spinner("Анализирую и проверяю релевантность конкурентов..."):
             try:
@@ -803,6 +832,9 @@ if st.session_state.result and st.button("Обновить список конк
 if st.session_state.result:
     st.subheader("Результат анализа")
     st.markdown(st.session_state.result, unsafe_allow_html=True)
+
+    render_copyable_domains(st.session_state.verified_competitors)
+
     render_validation_table(
         st.session_state.verified_competitors,
         st.session_state.rejected_competitors,
