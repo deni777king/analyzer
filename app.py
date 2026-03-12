@@ -3,10 +3,10 @@ import requests
 from bs4 import BeautifulSoup
 import json
 
-st.title("Конкурентный Анализатор")
+st.title("Конкурентный Анализатор (Grok xAI)")
 
-# Окно ввода API-ключа Grok
-api_key = st.text_input("Введи API-ключ Grok / xAI (xai-...)", type="password")
+# Окно ввода API-ключа
+api_key = st.text_input("Введи API-ключ xAI / Grok (xai-...)", type="password")
 
 if not api_key:
     st.warning("Введите API-ключ Grok, чтобы начать анализ.")
@@ -39,10 +39,14 @@ def browse_page(url):
         return f"Сайт {url} недоступен: {str(e)}"
 
 def call_grok(messages, use_tools=False):
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
     payload = {
-        "model": "grok-beta",  # можно заменить на "grok-2" или "grok-2-mini"
         "messages": messages,
+        "model": "grok-4-latest",  # твоя модель из curl
+        "stream": False,
         "temperature": 0.7,
         "max_tokens": 4096
     }
@@ -54,17 +58,15 @@ def call_grok(messages, use_tools=False):
         r.raise_for_status()
         return r.json()["choices"][0]["message"]
     except requests.exceptions.HTTPError as e:
-        if r.status_code == 429:
-            raise Exception("Лимит запросов исчерпан. Подождите 10–20 минут или пополните баланс в https://console.x.ai/")
-        elif r.status_code == 401 or r.status_code == 403:
-            raise Exception("Неверный или просроченный API-ключ. Проверьте ключ в https://console.x.ai/")
-        elif r.status_code == 503 or r.status_code == 502:
-            raise Exception("Сервер Grok временно недоступен (502/503). Попробуйте позже или используйте VPN.")
-        raise Exception(f"Grok HTTP ошибка {r.status_code}: {r.text}")
+        try:
+            error_detail = r.json().get("error", {}).get("message", str(e))
+        except:
+            error_detail = str(e)
+        raise Exception(f"Grok ошибка {r.status_code}: {error_detail}")
     except requests.exceptions.Timeout:
-        raise Exception("Таймаут соединения. Проверьте интернет или подключите VPN.")
+        raise Exception("Таймаут соединения (90 сек). Сервер xAI не отвечает.")
     except Exception as e:
-        raise Exception(f"Ошибка связи с Grok: {str(e)}")
+        raise Exception(f"Ошибка связи: {str(e)}")
 
 domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
 
