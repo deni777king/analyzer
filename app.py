@@ -14,7 +14,7 @@ tools = [{
     "type": "function",
     "function": {
         "name": "browse_page",
-        "description": "Проверить сайт по URL. Обязательно используй для каждого конкурента, чтобы убедиться, что он живой и релевантный.",
+        "description": "Посмотреть сайт по URL и извлечь текст. Обязательно используй для проверки живости.",
         "parameters": {
             "type": "object",
             "properties": {"url": {"type": "string"}},
@@ -31,15 +31,39 @@ def browse_page(url):
         text = soup.get_text(separator=' ', strip=True)[:12000]
         return text if len(text) > 200 else "Сайт пустой или не работает"
     except Exception as e:
-        return f"Сайт {url} мёртвый или недоступен: {str(e)}"
+        return f"Сайт {url} недоступен или мёртвый: {str(e)}"
 
-# Промпт без площадок, с акцентом только на живые сайты конкурентов
+def call_mistral(messages, use_tools=False):
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": "mistral-large-latest",
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 4096
+    }
+    if use_tools:
+        payload["tools"] = tools
+
+    try:
+        r = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]
+    except Exception as e:
+        st.error(f"Ошибка Mistral: {str(e)}")
+        st.stop()
+
+domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
+
+if 'result' not in st.session_state:
+    st.session_state.result = ""
+
+# ==================== УЛУЧШЕННЫЙ ПРОМПТ ====================
 base_prompt = """
 Ты аналитик сайтов. Отвечай ТОЛЬКО по пунктам, коротко, без лишнего текста.
-ОБЯЗАТЕЛЬНО используй инструмент browse_page для проверки каждого сайта конкурента.
-- Исключай все мёртвые/недоступные сайты.
-- Выдавай только живые, реальные и прямые конкуренты (похожего масштаба, не гиганты).
-- НЕ упоминай площадки типа Avito, OLX, Wildberries и т.д. — только сайты конкурентов.
+ОБЯЗАТЕЛЬНО используй инструмент browse_page для проверки живости КАЖДОГО сайта конкурента.
+- Исключай все мёртвые, недоступные или пустые сайты.
+- Выдавай только живые, реальные и прямые конкуренты (похожего масштаба, тематики и региона).
+- Сравнивай с нашим сайтом по тематике, размеру компании и зоне работы.
 - В пункте 7 выдай ТОЛЬКО 10 чистых кликабельных ссылок на живых конкурентов, без описаний!
 
 Структура ответа строго такая:
@@ -59,32 +83,11 @@ base_prompt = """
 Анализируй домен: {domain}
 """
 
-domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
-
-if 'result' not in st.session_state:
-    st.session_state.result = ""
-
-def call_mistral(messages, use_tools=False):
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": "mistral-large-latest",
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 4096
-    }
-    if use_tools:
-        payload["tools"] = tools
-
-    try:
-        r = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=60)
-        r.raise_for_status()
-        return r.json()["choices"][0]["message"]
-    except Exception as e:
-        raise Exception(f"Ошибка Mistral: {str(e)}")
-
+# Основной анализ
 if st.button("Провести анализ"):
     if domain:
-        with st.spinner("Анализирую..."):
+        st.session_state.result = ""
+        with st.spinner("Анализирую конкурентов..."):
             try:
                 prompt = base_prompt.format(domain=domain)
                 messages = [{"role": "user", "content": prompt}]
@@ -120,50 +123,40 @@ if st.button("Провести анализ"):
                         st.session_state.result = resp.get('content', 'Нет ответа')
                         break
             except Exception as e:
-                st.error(f"Ошибка: {str(e)}")
+                st.error(str(e))
     else:
         st.warning("Введи домен")
 
-# Кнопка переделки только пункта 7
+# Переделай только пункт 7
 if st.session_state.result and st.button("Переделай только пункт 7 (конкуренты)"):
     with st.spinner("Ищу только живых конкурентов..."):
         try:
             refine_prompt = f"""
-            Переделай ТОЛЬКО пункт 7.
-            Текущий результат: {st.session_state.result}
-            
-            Найди 10 живых, рабочих сайтов прямых конкурентов похожего масштаба.
-            Проверь каждый через browse_page.
-            Исключай мёртвые сайты и площадки (Avito, OLX и т.д.).
-            Выдай ТОЛЬКО 10 чистых ссылок:
-            - https://site1.ru
-            - https://site2.ru
-            ...
-            """
+Переделай ТОЛЬКО пункт 7.
+Текущий результат: {st.session_state.result}
 
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "model": "mistral-large-latest",
-                "messages": [{"role": "user", "content": refine_prompt}],
-                "tools": tools,
-                "temperature": 0.6
-            }
-            r = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=60)
-            r.raise_for_status()
-            new_content = r.json()["choices"][0]["message"]["content"]
-            
-            # Заменяем только пункт 7
-            old_result = st.session_state.result
-            if "7." in old_result:
-                parts = old_result.split("7.", 1)
-                new_result = parts[0] + "7." + new_content
+Найди 10 живых, рабочих сайтов прямых конкурентов похожего масштаба и тематики.
+Обязательно проверь каждый сайт через browse_page.
+Исключай все мёртвые и нерелевантные сайты.
+Выдай ТОЛЬКО 10 чистых ссылок:
+- https://site1.ru
+- https://site2.ru
+...
+"""
+            messages = [{"role": "user", "content": refine_prompt}]
+            resp = call_mistral(messages, use_tools=True)
+            new_content = resp.get('content', 'Нет ответа')
+
+            old = st.session_state.result
+            if "7." in old:
+                parts = old.split("7.", 1)
+                st.session_state.result = parts[0] + "7." + new_content
             else:
-                new_result = old_result + "\n\n" + new_content
-                
-            st.session_state.result = new_result
+                st.session_state.result = old + "\n\n" + new_content
+
             st.success("Пункт 7 переделан!")
         except Exception as e:
-            st.error(f"Ошибка переделки: {str(e)}")
+            st.error(str(e))
 
 # Вывод результата
 if st.session_state.result:
