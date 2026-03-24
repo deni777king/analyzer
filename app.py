@@ -451,7 +451,7 @@ SITE_SUMMARY_PROMPT = """
 2. Страна, регион/город:
 3. По всей стране или локально?
 4. Топ-10 запросов (используй ключевые слова из профиля сайта, не выдумывай):
-6. Мессенджеры (%):
+6. Мессенджеры и площадки для рекламы (какие каналы и площадки лучше всего подходят для продвижения сайта, исходя из его тематики и аудитории):
 """
 
 DIRECT_CANDIDATE_PROMPT = """
@@ -525,21 +525,17 @@ FINAL_REPORT_PROMPT = """
 3. По всей стране или локально?
 4. Топ-10 запросов (используй реальные ключевые слова из профиля нашего сайта, не выдумывай):
 5. Точные конкуренты (коротко: живой? тематика? масштаб? релевантность?) – только из списка проверенных точных конкурентов:
-6. Мессенджеры (%):
+6. Мессенджеры и площадки для рекламы (какие каналы и площадки лучше всего подходят для продвижения сайта, исходя из его тематики и аудитории):
 7. Точные конкуренты (ссылки):
-8. Косвенные / расширенные конкуренты (минимум 5, если удалось найти) – кратко объясни, почему каждый подходит (смежная ниша, альтернативное решение, пересечение по аудитории):
-9. Косвенные / расширенные конкуренты (ссылки):
-10. Противоречия / отсутствие данных:
+8. Конкуренты:
+   - Отличные конкуренты (прямые): (перечислить сайты из списка точных конкурентов, которые наиболее релевантны, с кратким пояснением)
+   - Подходящие (косвенные/расширенные): (перечислить сайты из списка косвенных конкурентов, которые подходят как альтернативы или смежные решения, с кратким пояснением)
 
 Правила:
 - Используй только сайты из переданных проверенных списков.
 - В пунктах 5 и 7 перечисляй только проверенные точные конкуренты.
-- В пунктах 8 и 9 перечисляй только проверенные косвенные / расширенные конкуренты.
-- Не смешивай точных и косвенных конкурентов между собой.
-- Для косвенных конкурентов кратко показывай, почему они подходят: смежная ниша, альтернативное решение, пересечение по аудитории или по потребности.
-- Если косвенных меньше 5, честно укажи это.
-- Если точных или косвенных конкурентов меньше желаемого количества, прямо напиши, что проверенно найдено меньше сайтов.
-- В пункте 10 укажи, какие кандидаты были отброшены и почему.
+- В пункте 8 чётко разделяй на "Отличные конкуренты (прямые)" и "Подходящие (косвенные/расширенные)". Для каждого сайта дай краткое пояснение, почему он подходит.
+- Если точных конкурентов меньше 5, укажи это. Если косвенных меньше 5, укажи это.
 - Не выдумывай дополнительные компании, ссылки, географию, запросы или факты, которых нет в исходных данных.
 - Отвечай коротко, конкретно и по делу.
 """
@@ -768,6 +764,52 @@ def ensure_min_indirect(domain: str, our_profile: dict, direct_verified: list[di
     return indirect_verified, rejected
 
 
+def build_section_5_direct(verified_direct: list[dict]) -> str:
+    lines = ["5. Точные конкуренты (коротко: живой? тематика? масштаб? релевантность?):"]
+    if not verified_direct:
+        lines.append("- Проверенных точных конкурентов не найдено.")
+        return "\n".join(lines)
+
+    for item in verified_direct[:10]:
+        shared = ", ".join(item.get("shared_keywords", [])[:4]) or "мало общих терминов"
+        lines.append(
+            f"- {item['url']} — живой, релевантность {item['score']}%, {item['scale_comment']}, совпадения: {shared}."
+        )
+    return "\n".join(lines)
+
+
+def build_section_7_direct(verified_direct: list[dict]) -> str:
+    lines = ["7. Точные конкуренты (ссылки):"]
+    if not verified_direct:
+        lines.append("- Проверенных ссылок нет")
+        return "\n".join(lines)
+    for item in verified_direct[:10]:
+        lines.append(f"- {item['url']}")
+    return "\n".join(lines)
+
+
+def build_section_8_competitors(verified_direct: list[dict], verified_indirect: list[dict]) -> str:
+    lines = ["8. Конкуренты:"]
+    
+    # Отличные конкуренты (прямые)
+    lines.append("   - Отличные конкуренты (прямые):")
+    if verified_direct:
+        for item in verified_direct[:10]:
+            lines.append(f"      * {item['url']} — {item['scale_comment']}, релевантность {item['score']}%, совпадения: {', '.join(item.get('shared_keywords', [])[:4]) or 'мало общих терминов'}.")
+    else:
+        lines.append("      * Проверенных точных конкурентов не найдено.")
+    
+    # Подходящие (косвенные/расширенные)
+    lines.append("   - Подходящие (косвенные/расширенные):")
+    if verified_indirect:
+        for item in verified_indirect[:10]:
+            lines.append(f"      * {item['url']} — {item['scale_comment']}, релевантность {item['score']}%, совпадения: {', '.join(item.get('shared_keywords', [])[:4]) or 'мало общих терминов'}.")
+    else:
+        lines.append("      * Проверенных косвенных конкурентов не найдено.")
+    
+    return "\n".join(lines)
+
+
 def build_final_report(
     our_profile: dict,
     site_outline: str,
@@ -795,48 +837,21 @@ def build_final_report(
 
     report = replace_section(report, 5, build_section_5_direct(verified_direct))
     report = replace_section(report, 7, build_section_7_direct(verified_direct))
-    report = replace_section(report, 8, build_section_8_indirect(verified_indirect))
-    report = replace_section(report, 9, build_section_9_indirect(verified_indirect))
-    report = replace_section(report, 10, build_section_10(rejected))
+    report = replace_section(report, 8, build_section_8_competitors(verified_direct, verified_indirect))
     return report
 
 
-def build_validation_rows(verified_direct: list[dict], verified_indirect: list[dict], rejected: list[dict]) -> list[dict]:
+def build_verified_rows(verified: list[dict]) -> list[dict]:
     rows = []
-
-    for item in verified_direct:
+    for item in verified:
         rows.append(
             {
                 "URL": item["url"],
-                "Тип": "Точный",
+                "Тип": "Точный" if item.get("competitor_type") == "direct" else "Косвенный",
                 "Статус": "OK",
                 "Релевантность": f"{item['score']}% ({item['relevance']})",
                 "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
                 "Комментарий": item.get("scale_comment", ""),
-            }
-        )
-
-    for item in verified_indirect:
-        rows.append(
-            {
-                "URL": item["url"],
-                "Тип": "Косвенный",
-                "Статус": "OK",
-                "Релевантность": f"{item['score']}% ({item['relevance']})",
-                "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
-                "Комментарий": item.get("scale_comment", ""),
-            }
-        )
-
-    for item in rejected:
-        rows.append(
-            {
-                "URL": item.get("url", ""),
-                "Тип": "Отклонён",
-                "Статус": "Отклонён",
-                "Релевантность": "—",
-                "Совпадения": "—",
-                "Комментарий": item.get("reason", ""),
             }
         )
     return rows
@@ -877,15 +892,17 @@ def run_full_analysis(domain: str) -> tuple[str, dict, list[dict], list[dict], l
     return report, our_profile, verified_direct, verified_indirect, rejected
 
 
-def render_validation_table(verified_direct: list[dict], verified_indirect: list[dict], rejected: list[dict]) -> None:
-    rows = build_validation_rows(verified_direct, verified_indirect, rejected)
+def render_validation_table(verified_direct: list[dict], verified_indirect: list[dict]) -> None:
+    all_verified = verified_direct + verified_indirect
+    all_verified.sort(key=lambda x: x["score"], reverse=True)
+    top_verified = all_verified[:10]
+    rows = build_verified_rows(top_verified)
     if not rows:
         return
 
-    st.subheader("Проверка найденных доменов")
+    st.subheader("Топ-10 проверенных конкурентов")
     st.caption(
-        "Сначала проверяется доступность сайта, затем сходство тематики и примерный масштаб. "
-        "Точные и косвенные конкуренты показываются отдельно."
+        "Сайты, прошедшие проверку доступности и тематической близости. Отсортированы по релевантности."
     )
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
@@ -914,111 +931,28 @@ def replace_section(text: str, section_number: int, new_section: str) -> str:
     return text[: match.start()] + new_section.strip() + "\n\n" + text[match.end() :].lstrip()
 
 
-def build_section_5_direct(verified_direct: list[dict]) -> str:
-    lines = ["5. Точные конкуренты (коротко: живой? тематика? масштаб? релевантность?):"]
-    if not verified_direct:
-        lines.append("- Проверенных точных конкурентов не найдено.")
-        return "\n".join(lines)
-
-    for item in verified_direct[:10]:
-        shared = ", ".join(item.get("shared_keywords", [])[:4]) or "мало общих терминов"
-        lines.append(
-            f"- {item['url']} — живой, релевантность {item['score']}%, {item['scale_comment']}, совпадения: {shared}."
-        )
-    return "\n".join(lines)
-
-
-def build_section_7_direct(verified_direct: list[dict]) -> str:
-    lines = ["7. Точные конкуренты (ссылки):"]
-    if not verified_direct:
-        lines.append("- Проверенных ссылок нет")
-        return "\n".join(lines)
-    for item in verified_direct[:10]:
-        lines.append(f"- {item['url']}")
-    return "\n".join(lines)
-
-
-def build_section_8_indirect(verified_indirect: list[dict]) -> str:
-    lines = ["8. Косвенные / расширенные конкуренты (минимум 5, если удалось найти):"]
-    if not verified_indirect:
-        lines.append("- Проверенных косвенных конкурентов не найдено.")
-        return "\n".join(lines)
-
-    if len(verified_indirect) < 5:
-        lines.append(f"- Найдено меньше 5 косвенных конкурентов: {len(verified_indirect)}.")
-
-    for item in verified_indirect[:10]:
-        shared = ", ".join(item.get("shared_keywords", [])[:4]) or "мало общих терминов"
-        lines.append(
-            f"- {item['url']} — косвенный конкурент, релевантность {item['score']}%, {item['scale_comment']}, совпадения: {shared}."
-        )
-    return "\n".join(lines)
-
-
-def build_section_9_indirect(verified_indirect: list[dict]) -> str:
-    lines = ["9. Косвенные / расширенные конкуренты (ссылки):"]
-    if not verified_indirect:
-        lines.append("- Проверенных ссылок нет")
-        return "\n".join(lines)
-    for item in verified_indirect[:10]:
-        lines.append(f"- {item['url']}")
-    return "\n".join(lines)
-
-
-def build_section_10(rejected: list[dict]) -> str:
-    lines = ["10. Противоречия / отсутствие данных:"]
-    if not rejected:
-        lines.append("- Явных противоречий нет, проверенные конкуренты прошли фильтр живости и релевантности.")
-        return "\n".join(lines)
-    for item in rejected[:15]:
-        lines.append(f"- {item.get('url', 'кандидат без URL')} — {item.get('reason', 'нет данных')}")
-    return "\n".join(lines)
-
-
-def render_copyable_domains(title: str, competitors: list[dict]) -> None:
-    if not competitors:
+def render_best_competitors(verified_direct: list[dict], verified_indirect: list[dict], limit=10):
+    combined = verified_direct + verified_indirect
+    combined.sort(key=lambda x: x["score"], reverse=True)
+    if not combined:
+        st.info("Нет проверенных конкурентов для отображения.")
         return
-
-    st.subheader(title)
-    st.caption("Можно открыть сайт или скопировать только домен.")
-
-    for index, item in enumerate(competitors[:10], start=1):
+    st.subheader("Лучшие конкуренты (по релевантности)")
+    st.caption("Сайты, наиболее подходящие по тематике и масштабу. Можно открыть или скопировать домен.")
+    
+    for index, item in enumerate(combined[:limit], start=1):
         url = item.get("url", "")
         domain = item.get("domain") or get_domain_key(url)
-
         safe_domain = json.dumps(domain, ensure_ascii=False)
         safe_url = json.dumps(url, ensure_ascii=False)
-
         html = f"""
-        <div style="
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            padding:10px 12px;
-            border:1px solid #e5e7eb;
-            border-radius:10px;
-            margin-bottom:8px;
-            font-family:Arial, sans-serif;
-        ">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid #e5e7eb; border-radius:10px; margin-bottom:8px; font-family:Arial, sans-serif;">
             <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
                 <span style="font-weight:600;margin-right:8px;">{index}.</span>
-                <a href={safe_url} target="_blank" style="text-decoration:none;color:#2563eb;">
-                    {domain}
-                </a>
+                <a href={safe_url} target="_blank" style="text-decoration:none;color:#2563eb;">{domain}</a>
+                <span style="margin-left:8px; color:#6b7280; font-size:0.9em;">({item['score']}%)</span>
             </div>
-            <button
-                onclick='navigator.clipboard.writeText({safe_domain})'
-                style="
-                    border:1px solid #d1d5db;
-                    border-radius:8px;
-                    padding:6px 10px;
-                    background:#ffffff;
-                    cursor:pointer;
-                "
-            >
-                Копировать
-            </button>
+            <button onclick='navigator.clipboard.writeText({safe_domain})' style="border:1px solid #d1d5db; border-radius:8px; padding:6px 10px; background:#ffffff; cursor:pointer;">Копировать</button>
         </div>
         """
         components.html(html, height=64)
@@ -1070,9 +1004,7 @@ if st.session_state.result and st.button("Обновить список конк
                 verified_direct, verified_indirect, rejected = rerun_competitors_only(saved_domain, our_profile)
                 updated = replace_section(st.session_state.result, 5, build_section_5_direct(verified_direct))
                 updated = replace_section(updated, 7, build_section_7_direct(verified_direct))
-                updated = replace_section(updated, 8, build_section_8_indirect(verified_indirect))
-                updated = replace_section(updated, 9, build_section_9_indirect(verified_indirect))
-                updated = replace_section(updated, 10, build_section_10(rejected))
+                updated = replace_section(updated, 8, build_section_8_competitors(verified_direct, verified_indirect))
 
                 st.session_state.result = updated
                 st.session_state.verified_direct_competitors = verified_direct
@@ -1086,17 +1018,15 @@ if st.session_state.result:
     st.subheader("Результат анализа")
     st.markdown(st.session_state.result, unsafe_allow_html=True)
 
-    render_copyable_domains(
-        "Точные конкуренты",
+    # Блок с лучшими конкурентами (кнопки копирования)
+    render_best_competitors(
         st.session_state.verified_direct_competitors,
-    )
-    render_copyable_domains(
-        "Косвенные / расширенные конкуренты",
         st.session_state.verified_indirect_competitors,
+        limit=10
     )
 
+    # Таблица с топ-10 проверенных конкурентов
     render_validation_table(
         st.session_state.verified_direct_competitors,
         st.session_state.verified_indirect_competitors,
-        st.session_state.rejected_competitors,
     )
