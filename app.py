@@ -2,7 +2,6 @@ import json
 import math
 import os
 import re
-import time
 import threading
 import concurrent.futures
 from collections import Counter
@@ -17,8 +16,6 @@ st.set_page_config(page_title="Конкурентный Анализатор", l
 st.title("Конкурентный Анализатор")
 
 # ===== НАСТРОЙКА API-КЛЮЧЕЙ =====
-# Добавьте сюда свои ключи (сколько угодно). Они будут использоваться в round-robin,
-# каждый следующий вызов берёт следующий ключ.
 MISTRAL_API_KEYS = [
     "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR",
     "RciSeumN9OBaOuhUNcQ0ynbjKSVkw6kF",
@@ -65,7 +62,7 @@ STOPWORDS = {
     "контакты", "contact", "contacts", "ru", "com", "org", "net", "www", "http", "https",
 }
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (без изменений) ==========
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
@@ -421,182 +418,6 @@ def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
 
 # ========== ИЗМЕНЁННЫЕ ФУНКЦИИ С ПАРАЛЛЕЛЬНОЙ ОБРАБОТКОЙ ==========
 
-def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: float = 0.3, max_tokens: int = 4096) -> dict:
-    """Вызывает Mistral API, перебирая ключи при 401 (потокобезопасно)."""
-    keys = [k for k in MISTRAL_API_KEYS if k]
-    if not keys:
-        raise RuntimeError("Нет ни одного API-ключа в списке MISTRAL_API_KEYS")
-
-    start_index = _api_key_index % len(keys)  # начинаем с текущего индекса
-    for i in range(len(keys)):
-        idx = (start_index + i) % len(keys)
-        api_key = keys[idx]
-        try:
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "model": MISTRAL_MODEL,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            if use_tools:
-                payload["tools"] = tools
-
-            response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
-            response.raise_for_status()
-            # Успешный запрос – увеличиваем глобальный индекс
-            with _api_key_lock:
-                global _api_key_index
-                _api_key_index += 1
-            return response.json()["choices"][0]["message"]
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                continue
-            else:
-                raise
-        except Exception:
-            continue
-
-    raise RuntimeError(f"Все API-ключи невалидны или не имеют доступа к модели {MISTRAL_MODEL}")
-
-
-def complete_with_tools(messages: list[dict], *, temperature: float = 0.3, max_tokens: int = 4096) -> str:
-    """Выполняет tool calls параллельно, если их несколько."""
-    conversation = list(messages)
-    max_rounds = 12
-
-    for _ in range(max_rounds):
-        response_message = call_mistral(
-            conversation,
-            use_tools=True,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        conversation.append(response_message)
-        tool_calls = response_message.get("tool_calls") or []
-        if not tool_calls:
-            return response_message.get("content", "")
-
-        # Функция для обработки одного tool call (будет вызвана в потоке)
-        def process_tool_call(tool_call):
-            func = tool_call.get("function") or {}
-            if func.get("name") != "browse_page":
-                return None
-            try:
-                arguments = json.loads(func.get("arguments", "{}"))
-                url = arguments.get("url", "")
-                content = browse_page(url) if url else json.dumps({"error": "Пустой URL"}, ensure_ascii=False)
-            except Exception as exc:
-                content = json.dumps({"error": str(exc)}, ensure_ascii=False)
-            return {
-                "role": "tool",
-                "tool_call_id": tool_call["id"],
-                "name": "browse_page",
-                "content": content,
-            }
-
-        # Параллельное выполнение всех tool calls
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            results = list(executor.map(process_tool_call, tool_calls))
-
-        for result in results:
-            if result:
-                conversation.append(result)
-
-    return "Не удалось завершить обработку tool calls."
-
-
-def verify_competitors(our_profile: dict, candidate_urls: list[str], target_type: str) -> tuple[list[dict], list[dict]]:
-    """Параллельная проверка кандидатов (до 10 одновременно)."""
-    verified = []
-    rejected = []
-    seen_domains = set()
-
-    # Убираем дубликаты
-    unique_urls = []
-    for raw_url in candidate_urls:
-        url = normalize_root_url(raw_url)
-        domain = get_domain_key(url)
-        if domain and domain not in seen_domains:
-            seen_domains.add(domain)
-            unique_urls.append(url)
-
-    def process_candidate(url):
-        domain = get_domain_key(url)
-        if domain == our_profile.get("domain"):
-            return ("reject", {"url": url, "reason": "Это наш собственный сайт", "type": target_type})
-        if is_blocked_domain(domain):
-            return ("reject", {"url": url, "reason": "Маркетплейс / агрегатор", "type": target_type})
-
-        candidate_profile = fetch_site_profile(url)
-        if not candidate_profile.get("ok"):
-            return ("reject", {
-                "url": url,
-                "reason": f"Недоступен: {candidate_profile.get('issue', 'ошибка')}",
-                "type": target_type,
-            })
-
-        comparison = compare_profiles(our_profile, candidate_profile)
-        actual_type = classify_competitor(comparison)
-
-        record = {
-            "url": candidate_profile["final_url"],
-            "domain": candidate_profile["domain"],
-            "title": candidate_profile["title"],
-            "description": candidate_profile["description"],
-            "keywords": candidate_profile.get("keywords", [])[:10],
-            "live": True,
-            "score": comparison["score"],
-            "relevance": comparison["relevance"],
-            "shared_keywords": comparison["shared_keywords"],
-            "scale_comment": comparison["scale_comment"],
-            "reason": comparison["reason"],
-            "competitor_type": actual_type or "rejected",
-        }
-
-        if target_type == "direct":
-            if actual_type == "direct":
-                return ("verify", record)
-            else:
-                return ("reject", {
-                    "url": candidate_profile["final_url"],
-                    "reason": f"Не прошёл как точный конкурент ({comparison['score']}%). {comparison['reason']} {comparison['scale_comment']}",
-                    "type": "direct",
-                })
-        else:  # indirect
-            if actual_type == "indirect":
-                return ("verify", record)
-            elif actual_type == "direct":
-                return ("reject", {
-                    "url": candidate_profile["final_url"],
-                    "reason": f"Слишком близок к прямому конкуренту ({comparison['score']}%), поэтому не включён в косвенные.",
-                    "type": "indirect",
-                })
-            else:
-                return ("reject", {
-                    "url": candidate_profile["final_url"],
-                    "reason": f"Недостаточная тематическая близость для косвенного конкурента ({comparison['score']}%). {comparison['reason']} {comparison['scale_comment']}",
-                    "type": "indirect",
-                })
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(process_candidate, url) for url in unique_urls]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                action, data = future.result()
-                if action == "verify":
-                    verified.append(data)
-                else:
-                    rejected.append(data)
-            except Exception as e:
-                rejected.append({"url": "ошибка обработки", "reason": str(e), "type": target_type})
-
-    verified.sort(key=lambda item: item["score"], reverse=True)
-    return verified, rejected
-
-
-# ========== ОСТАЛЬНЫЕ ФУНКЦИИ БЕЗ ИЗМЕНЕНИЙ ==========
-
 tools = [
     {
         "type": "function",
@@ -725,6 +546,173 @@ FINAL_REPORT_PROMPT = """
 - Не выдумывай дополнительные компании, ссылки, географию, запросы или факты, которых нет в исходных данных.
 - Отвечай коротко, конкретно и по делу.
 """
+
+
+def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: float = 0.3, max_tokens: int = 4096) -> dict:
+    global _api_key_index
+    keys = [k for k in MISTRAL_API_KEYS if k]
+    if not keys:
+        raise RuntimeError("Нет ни одного API-ключа в списке MISTRAL_API_KEYS")
+
+    start_index = _api_key_index % len(keys)
+    for i in range(len(keys)):
+        idx = (start_index + i) % len(keys)
+        api_key = keys[idx]
+        try:
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": MISTRAL_MODEL,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if use_tools:
+                payload["tools"] = tools
+
+            response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
+            response.raise_for_status()
+            with _api_key_lock:
+                _api_key_index += 1
+            return response.json()["choices"][0]["message"]
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                continue
+            else:
+                raise
+        except Exception:
+            continue
+
+    raise RuntimeError(f"Все API-ключи невалидны или не имеют доступа к модели {MISTRAL_MODEL}")
+
+
+def complete_with_tools(messages: list[dict], *, temperature: float = 0.3, max_tokens: int = 4096) -> str:
+    conversation = list(messages)
+    max_rounds = 12
+
+    for _ in range(max_rounds):
+        response_message = call_mistral(
+            conversation,
+            use_tools=True,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        conversation.append(response_message)
+        tool_calls = response_message.get("tool_calls") or []
+        if not tool_calls:
+            return response_message.get("content", "")
+
+        def process_tool_call(tool_call):
+            func = tool_call.get("function") or {}
+            if func.get("name") != "browse_page":
+                return None
+            try:
+                arguments = json.loads(func.get("arguments", "{}"))
+                url = arguments.get("url", "")
+                content = browse_page(url) if url else json.dumps({"error": "Пустой URL"}, ensure_ascii=False)
+            except Exception as exc:
+                content = json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return {
+                "role": "tool",
+                "tool_call_id": tool_call["id"],
+                "name": "browse_page",
+                "content": content,
+            }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(process_tool_call, tool_calls))
+
+        for result in results:
+            if result:
+                conversation.append(result)
+
+    return "Не удалось завершить обработку tool calls."
+
+
+def verify_competitors(our_profile: dict, candidate_urls: list[str], target_type: str) -> tuple[list[dict], list[dict]]:
+    verified = []
+    rejected = []
+    seen_domains = set()
+
+    unique_urls = []
+    for raw_url in candidate_urls:
+        url = normalize_root_url(raw_url)
+        domain = get_domain_key(url)
+        if domain and domain not in seen_domains:
+            seen_domains.add(domain)
+            unique_urls.append(url)
+
+    def process_candidate(url):
+        domain = get_domain_key(url)
+        if domain == our_profile.get("domain"):
+            return ("reject", {"url": url, "reason": "Это наш собственный сайт", "type": target_type})
+        if is_blocked_domain(domain):
+            return ("reject", {"url": url, "reason": "Маркетплейс / агрегатор", "type": target_type})
+
+        candidate_profile = fetch_site_profile(url)
+        if not candidate_profile.get("ok"):
+            return ("reject", {
+                "url": url,
+                "reason": f"Недоступен: {candidate_profile.get('issue', 'ошибка')}",
+                "type": target_type,
+            })
+
+        comparison = compare_profiles(our_profile, candidate_profile)
+        actual_type = classify_competitor(comparison)
+
+        record = {
+            "url": candidate_profile["final_url"],
+            "domain": candidate_profile["domain"],
+            "title": candidate_profile["title"],
+            "description": candidate_profile["description"],
+            "keywords": candidate_profile.get("keywords", [])[:10],
+            "live": True,
+            "score": comparison["score"],
+            "relevance": comparison["relevance"],
+            "shared_keywords": comparison["shared_keywords"],
+            "scale_comment": comparison["scale_comment"],
+            "reason": comparison["reason"],
+            "competitor_type": actual_type or "rejected",
+        }
+
+        if target_type == "direct":
+            if actual_type == "direct":
+                return ("verify", record)
+            else:
+                return ("reject", {
+                    "url": candidate_profile["final_url"],
+                    "reason": f"Не прошёл как точный конкурент ({comparison['score']}%). {comparison['reason']} {comparison['scale_comment']}",
+                    "type": "direct",
+                })
+        else:
+            if actual_type == "indirect":
+                return ("verify", record)
+            elif actual_type == "direct":
+                return ("reject", {
+                    "url": candidate_profile["final_url"],
+                    "reason": f"Слишком близок к прямому конкуренту ({comparison['score']}%), поэтому не включён в косвенные.",
+                    "type": "indirect",
+                })
+            else:
+                return ("reject", {
+                    "url": candidate_profile["final_url"],
+                    "reason": f"Недостаточная тематическая близость для косвенного конкурента ({comparison['score']}%). {comparison['reason']} {comparison['scale_comment']}",
+                    "type": "indirect",
+                })
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(process_candidate, url) for url in unique_urls]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                action, data = future.result()
+                if action == "verify":
+                    verified.append(data)
+                else:
+                    rejected.append(data)
+            except Exception as e:
+                rejected.append({"url": "ошибка обработки", "reason": str(e), "type": target_type})
+
+    verified.sort(key=lambda item: item["score"], reverse=True)
+    return verified, rejected
 
 
 def get_site_outline(our_profile: dict) -> str:
