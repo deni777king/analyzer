@@ -4,6 +4,8 @@ import os
 import re
 from collections import Counter
 from urllib.parse import urlparse
+import itertools
+import threading
 
 import requests
 import streamlit as st
@@ -12,6 +14,33 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Конкурентный Анализатор", layout="wide")
 st.title("Конкурентный Анализатор")
+
+# ===== НАСТРОЙКА API-КЛЮЧЕЙ =====
+# Добавьте сюда свои ключи (сколько угодно). Они будут использоваться по очереди.
+MISTRAL_API_KEYS = [
+    "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR",   # ваш первый ключ
+    "RciSeumN9OBaOuhUNcQ0ynbjKSVkw6kF", # "ключ2",
+    "jMinLgK9DSNsMJ6gSQM7yATFNRfoOvxx", # "ключ3",
+    "hzCXFKU2QmiHcVN7nbuHWSDKCkqW29MJ", # "ключ4",
+]
+
+# Механизм round-robin для API-ключей
+_api_key_cycle = None
+_api_key_lock = threading.Lock()
+
+def init_api_key_cycle(keys: list):
+    global _api_key_cycle
+    with _api_key_lock:
+        _api_key_cycle = itertools.cycle(keys)
+
+def get_next_api_key() -> str:
+    global _api_key_cycle
+    if _api_key_cycle is None:
+        raise RuntimeError("API keys not initialized")
+    with _api_key_lock:
+        return next(_api_key_cycle)
+
+init_api_key_cycle(MISTRAL_API_KEYS)
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 REQUEST_HEADERS = {
@@ -51,16 +80,11 @@ STOPWORDS = {
     "контакты", "contact", "contacts", "ru", "com", "org", "net", "www", "http", "https",
 }
 
-
 def get_default_api_key() -> str:
     try:
         return str(st.secrets["MISTRAL_API_KEY"]).strip()
     except Exception:
         return os.getenv("MISTRAL_API_KEY", "").strip()
-
-
-# API ключ оставлен в коде, но поле ввода в интерфейсе убрано
-api_key = "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR"
 
 tools = [
     {
@@ -557,9 +581,10 @@ def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
 
 
 def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: float = 0.3, max_tokens: int = 4096) -> dict:
+    api_key = get_next_api_key()
     if not api_key:
         raise RuntimeError(
-            "Не указан Mistral API key. Добавь MISTRAL_API_KEY в st.secrets или в переменные окружения."
+            "Не указан Mistral API key. Добавь ключи в список MISTRAL_API_KEYS."
         )
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -1042,8 +1067,8 @@ if "last_domain" not in st.session_state:
 if st.button("Провести анализ"):
     if not domain:
         st.warning("Введи домен")
-    elif not api_key:
-        st.warning("Не найден Mistral API key в st.secrets или переменных окружения")
+    elif not MISTRAL_API_KEYS:
+        st.warning("Не найдены API-ключи. Добавьте их в список MISTRAL_API_KEYS.")
     else:
         with st.spinner("Анализирую и проверяю точных и косвенных конкурентов..."):
             try:
