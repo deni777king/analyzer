@@ -19,28 +19,13 @@ st.title("Конкурентный Анализатор")
 # Добавьте сюда свои ключи (сколько угодно). Они будут использоваться по очереди.
 MISTRAL_API_KEYS = [
     "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR",   # ваш первый ключ
-    "RciSeumN9OBaOuhUNcQ0ynbjKSVkw6kF", # "ключ2",
-    "jMinLgK9DSNsMJ6gSQM7yATFNRfoOvxx", # "ключ3",
-    "hzCXFKU2QmiHcVN7nbuHWSDKCkqW29MJ", # "ключ4",
+    "RciSeumN9OBaOuhUNcQ0ynbjKSVkw6kF",   # второй
+    "jMinLgK9DSNsMJ6gSQM7yATFNRfoOvxx",   # третий
+    "hzCXFKU2QmiHcVN7nbuHWSDKCkqW29MJ",   # четвёртый
 ]
 
-# Механизм round-robin для API-ключей
-_api_key_cycle = None
-_api_key_lock = threading.Lock()
-
-def init_api_key_cycle(keys: list):
-    global _api_key_cycle
-    with _api_key_lock:
-        _api_key_cycle = itertools.cycle(keys)
-
-def get_next_api_key() -> str:
-    global _api_key_cycle
-    if _api_key_cycle is None:
-        raise RuntimeError("API keys not initialized")
-    with _api_key_lock:
-        return next(_api_key_cycle)
-
-init_api_key_cycle(MISTRAL_API_KEYS)
+# Модель Mistral (small доступна на бесплатных ключах)
+MISTRAL_MODEL = "mistral-small-latest"   # или "mistral-large-latest" для платных
 
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 REQUEST_HEADERS = {
@@ -80,11 +65,18 @@ STOPWORDS = {
     "контакты", "contact", "contacts", "ru", "com", "org", "net", "www", "http", "https",
 }
 
-def get_default_api_key() -> str:
-    try:
-        return str(st.secrets["MISTRAL_API_KEY"]).strip()
-    except Exception:
-        return os.getenv("MISTRAL_API_KEY", "").strip()
+# Инициализация индекса текущего ключа в session_state
+if "api_key_index" not in st.session_state:
+    st.session_state.api_key_index = 0
+
+def get_next_api_key() -> str:
+    """Возвращает следующий API-ключ по кругу (round-robin)."""
+    keys = [k for k in MISTRAL_API_KEYS if k]   # отфильтровываем пустые
+    if not keys:
+        raise RuntimeError("Нет ни одного API-ключа в списке MISTRAL_API_KEYS")
+    idx = st.session_state.api_key_index % len(keys)
+    st.session_state.api_key_index = (idx + 1) % len(keys)
+    return keys[idx]
 
 tools = [
     {
@@ -581,25 +573,47 @@ def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
 
 
 def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: float = 0.3, max_tokens: int = 4096) -> dict:
-    api_key = get_next_api_key()
-    if not api_key:
-        raise RuntimeError(
-            "Не указан Mistral API key. Добавь ключи в список MISTRAL_API_KEYS."
-        )
+    """Вызывает Mistral API с ротацией ключей. При 401 перебирает все ключи."""
+    keys = [k for k in MISTRAL_API_KEYS if k]
+    if not keys:
+        raise RuntimeError("Нет ни одного API-ключа в списке MISTRAL_API_KEYS")
 
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": "mistral-large-latest",
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    if use_tools:
-        payload["tools"] = tools
+    # Начинаем с текущего индекса, чтобы распределять нагрузку
+    start_index = st.session_state.api_key_index % len(keys)
+    tried = 0
+    last_exception = None
 
-    response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]
+    for i in range(len(keys)):
+        idx = (start_index + i) % len(keys)
+        api_key = keys[idx]
+        try:
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": MISTRAL_MODEL,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if use_tools:
+                payload["tools"] = tools
+
+            response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
+            response.raise_for_status()
+            # Успешный запрос – обновляем индекс, чтобы следующий запрос начал со следующего ключа
+            st.session_state.api_key_index = (idx + 1) % len(keys)
+            return response.json()["choices"][0]["message"]
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                last_exception = e
+                continue   # пробуем следующий ключ
+            else:
+                raise
+        except Exception as e:
+            last_exception = e
+            continue
+
+    # Если все ключи не сработали
+    raise RuntimeError(f"Все API-ключи невалидны или не имеют доступа к модели {MISTRAL_MODEL}. Последняя ошибка: {last_exception}")
 
 
 def complete_with_tools(messages: list[dict], *, temperature: float = 0.3, max_tokens: int = 4096) -> str:
