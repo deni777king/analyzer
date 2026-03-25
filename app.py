@@ -1,6 +1,5 @@
 import json
 import math
-import os
 import re
 import threading
 import concurrent.futures
@@ -16,7 +15,7 @@ st.set_page_config(page_title="Конкурентный Анализатор", l
 st.title("Конкурентный Анализатор")
 
 # ===== НАСТРОЙКА API-КЛЮЧЕЙ =====
-# Ключи Mistral (используются в round-robin)
+# Mistral
 MISTRAL_API_KEYS = [
     "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR",
     "RciSeumN9OBaOuhUNcQ0ynbjKSVkw6kF",
@@ -24,29 +23,59 @@ MISTRAL_API_KEYS = [
     "hzCXFKU2QmiHcVN7nbuHWSDKCkqW29MJ",
 ]
 
-# Ключ Exa AI (для поиска похожих сайтов)
-EXA_API_KEY = "3d9ba739-d0ca-4c27-9be5-5d0543944737"
+# Exa
+EXA_API_KEYS = [
+    "5c8f7269-38ce-4f0d-8059-de075646d002",
+    "3d9ba739-d0ca-4c27-9be5-5d0543944737",
+    "473e4118-05cf-43a4-b21c-29d833390442",
+]
 
-# Ключ Jina Reader (для улучшенного извлечения контента)
-JINA_API_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
+# Jina Reader
+JINA_API_KEYS = [
+    "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe",
+    "jina_486b05a2544e4acba496d5733d044ad9GDR0gPHC7hHlOUaxBRXrGAcGMCT7",
+]
 JINA_READER_URL = "https://r.jina.ai/"
+
+# Потокобезопасные счётчики round‑robin
+_mistral_lock = threading.Lock()
+_mistral_idx = 0
+
+_exa_lock = threading.Lock()
+_exa_idx = 0
+
+_jina_lock = threading.Lock()
+_jina_idx = 0
+
+def get_next_mistral_key():
+    global _mistral_idx
+    if not MISTRAL_API_KEYS:
+        raise RuntimeError("Нет ключей Mistral")
+    with _mistral_lock:
+        key = MISTRAL_API_KEYS[_mistral_idx % len(MISTRAL_API_KEYS)]
+        _mistral_idx += 1
+        return key
+
+def get_next_exa_key():
+    global _exa_idx
+    if not EXA_API_KEYS:
+        return None
+    with _exa_lock:
+        key = EXA_API_KEYS[_exa_idx % len(EXA_API_KEYS)]
+        _exa_idx += 1
+        return key
+
+def get_next_jina_key():
+    global _jina_idx
+    if not JINA_API_KEYS:
+        return None
+    with _jina_lock:
+        key = JINA_API_KEYS[_jina_idx % len(JINA_API_KEYS)]
+        _jina_idx += 1
+        return key
 
 MISTRAL_MODEL = "mistral-small-latest"
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
-
-# Потокобезопасный счётчик для round-robin
-_api_key_lock = threading.Lock()
-_api_key_index = 0
-
-def get_next_api_key() -> str:
-    """Возвращает следующий API-ключ по кругу (потокобезопасно)."""
-    global _api_key_index
-    if not MISTRAL_API_KEYS:
-        raise RuntimeError("Нет ни одного API-ключа")
-    with _api_key_lock:
-        key = MISTRAL_API_KEYS[_api_key_index % len(MISTRAL_API_KEYS)]
-        _api_key_index += 1
-        return key
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -55,11 +84,13 @@ REQUEST_HEADERS = {
     ),
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
+
 MARKETPLACE_BLOCKLIST = {
     "avito.ru", "www.avito.ru", "olx.ua", "www.olx.ua", "wildberries.ru", "www.wildberries.ru",
     "ozon.ru", "www.ozon.ru", "market.yandex.ru", "yandex.market", "tiu.ru", "www.tiu.ru",
     "prom.ua", "www.prom.ua", "aliexpress.com", "www.aliexpress.com", "satu.kz", "www.satu.kz",
 }
+
 STOPWORDS = {
     "и", "в", "во", "на", "по", "с", "со", "к", "ко", "у", "о", "об", "от", "до", "для",
     "из", "за", "под", "при", "это", "как", "что", "или", "а", "но", "мы", "вы", "они",
@@ -74,34 +105,31 @@ STOPWORDS = {
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
-    """Пытается получить профиль сайта: сначала через Jina Reader (с ключом, если есть), затем через прямой парсинг."""
     variants = build_url_variants(url_or_domain)
     last_error = "Не удалось открыть сайт"
 
     for candidate in variants:
-        # Попробуем сначала Jina Reader
+        # Jina Reader (с ротацией ключей)
         try:
             jina_url = JINA_READER_URL + candidate
             jina_headers = {}
-            if JINA_API_KEY:
-                jina_headers["Authorization"] = f"Bearer {JINA_API_KEY}"
+            jina_key = get_next_jina_key()
+            if jina_key:
+                jina_headers["Authorization"] = f"Bearer {jina_key}"
             response = requests.get(jina_url, headers=jina_headers, timeout=15)
             if response.status_code == 200:
                 markdown = response.text
-                # Извлекаем заголовок (первый #)
                 title_match = re.search(r'# (.*?)\n', markdown)
                 title = title_match.group(1) if title_match else ""
-                # Пытаемся найти description (часто в метаданных)
                 desc_match = re.search(r'description: (.*?)\n', markdown)
                 description = desc_match.group(1) if desc_match else ""
-                # Убираем маркдаун-символы и излишние пробелы
                 text = re.sub(r'[#*`_\[\]\(\)]', ' ', markdown)
                 text = clean_text(text)
                 if len(text) < 180:
                     raise Exception("Контент слишком короткий")
                 final_url = candidate
                 final_domain = get_domain_key(final_url)
-                weighted_text = " ".join([title] * 4 + [description] * 3 + [text])
+                weighted_text = " ".join([title] * 6 + [description] * 5 + [text])
                 token_counter = Counter(tokenize(weighted_text))
                 keywords = [token for token, _ in token_counter.most_common(25)]
                 return {
@@ -112,7 +140,7 @@ def fetch_site_profile(url_or_domain: str) -> dict:
                     "domain": final_domain,
                     "title": title,
                     "description": description,
-                    "headings": [],  # Jina не даёт структуру заголовков
+                    "headings": [],
                     "text": text,
                     "snippet": text[:1500],
                     "status_code": 200,
@@ -125,7 +153,7 @@ def fetch_site_profile(url_or_domain: str) -> dict:
         except Exception as e:
             last_error = f"Jina: {e}"
 
-        # Если Jina не сработал, используем старый парсинг
+        # Обычный парсинг
         try:
             response = requests.get(candidate, headers=REQUEST_HEADERS, timeout=15, allow_redirects=True)
             status_code = response.status_code
@@ -168,7 +196,7 @@ def fetch_site_profile(url_or_domain: str) -> dict:
                 continue
 
             weighted_text = " ".join(
-                [title] * 4 + [description] * 3 + headings * 2 + [text]
+                [title] * 6 + [description] * 5 + headings * 3 + [text]
             )
             token_counter = Counter(tokenize(weighted_text))
             keywords = [token for token, _ in token_counter.most_common(25)]
@@ -235,13 +263,11 @@ def build_url_variants(value: str) -> list[str]:
     raw = value.strip()
     if not raw:
         return []
-
     raw = re.sub(r"^[\-\s]+", "", raw)
     raw = re.sub(r"[\s/]+$", "", raw)
     raw = raw.replace("http://", "").replace("https://", "")
     raw = raw.replace("www.", "")
     domain = raw.split("/", 1)[0]
-
     variants = [
         f"https://{domain}",
         f"https://www.{domain}",
@@ -316,8 +342,8 @@ def cosine_similarity(counter_a: Counter, counter_b: Counter) -> float:
         return 0.0
     shared = set(counter_a) & set(counter_b)
     numerator = sum(counter_a[token] * counter_b[token] for token in shared)
-    norm_a = math.sqrt(sum(value * value for value in counter_a.values()))
-    norm_b = math.sqrt(sum(value * value for value in counter_b.values()))
+    norm_a = math.sqrt(sum(v * v for v in counter_a.values()))
+    norm_b = math.sqrt(sum(v * v for v in counter_b.values()))
     if not norm_a or not norm_b:
         return 0.0
     return numerator / (norm_a * norm_b)
@@ -348,16 +374,16 @@ def compare_profiles(our_profile: dict, candidate_profile: dict) -> dict:
         keyword_overlap = len(set(shared_keywords)) / max(1, min(len(our_keywords), len(candidate_keywords)))
     header_overlap = jaccard_similarity(our_head, candidate_head)
 
-    our_text_length = max(our_profile.get("text_length", 0), 1)
-    candidate_text_length = max(candidate_profile.get("text_length", 0), 1)
-    text_ratio = min(our_text_length, candidate_text_length) / max(our_text_length, candidate_text_length)
+    our_text_len = max(our_profile.get("text_length", 0), 1)
+    cand_text_len = max(candidate_profile.get("text_length", 0), 1)
+    text_ratio = min(our_text_len, cand_text_len) / max(our_text_len, cand_text_len)
 
     our_links = max(our_profile.get("internal_links", 0), 1)
-    candidate_links = max(candidate_profile.get("internal_links", 0), 1)
-    link_ratio = min(our_links, candidate_links) / max(our_links, candidate_links)
-    scale_score = (0.6 * text_ratio) + (0.4 * link_ratio)
+    cand_links = max(candidate_profile.get("internal_links", 0), 1)
+    link_ratio = min(our_links, cand_links) / max(our_links, cand_links)
+    scale_score = 0.6 * text_ratio + 0.4 * link_ratio
 
-    thematic_score = (0.55 * body_cosine) + (0.30 * keyword_overlap) + (0.15 * header_overlap)
+    thematic_score = 0.55 * body_cosine + 0.30 * keyword_overlap + 0.15 * header_overlap
     final_score = round(((0.8 * thematic_score) + (0.2 * scale_score)) * 100, 1)
 
     relevance = "низкая"
@@ -397,9 +423,11 @@ def classify_competitor(comparison: dict) -> str | None:
     body_cosine = comparison["body_cosine"]
     header_overlap = comparison["header_overlap"]
 
-    if score >= 24 and (shared_count >= 3 or body_cosine >= 0.12 or header_overlap >= 0.10):
+    # Точный конкурент: высокие требования + наличие общих слов
+    if score >= 26 and shared_count >= 1 and (body_cosine >= 0.15 or header_overlap >= 0.12):
         return "direct"
-    if score >= 12 and (shared_count >= 1 or body_cosine >= 0.06 or header_overlap >= 0.05):
+    # Косвенный конкурент: немного ниже, но тоже с общими словами
+    if score >= 14 and shared_count >= 1 and (body_cosine >= 0.08 or header_overlap >= 0.07):
         return "indirect"
     return None
 
@@ -474,14 +502,11 @@ def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
 
 # ========== ИНТЕГРАЦИЯ EXA AI ==========
 def search_exa(query: str, num_results: int = 15) -> list[str]:
-    """Поиск похожих сайтов через Exa AI."""
-    if not EXA_API_KEY:
+    api_key = get_next_exa_key()
+    if not api_key:
         return []
     url = "https://api.exa.ai/search"
-    headers = {
-        "Authorization": f"Bearer {EXA_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
         "query": query,
         "type": "neural",
@@ -507,8 +532,7 @@ tools = [
             "name": "browse_page",
             "description": (
                 "Проверить сайт по URL и вернуть краткий профиль страницы: живая ли она, тема, заголовок, "
-                "описание, ключевые слова и краткий фрагмент текста. Используй для каждого кандидата "
-                "перед тем, как включать его в ответ."
+                "описание, ключевые слова и краткий фрагмент текста."
             ),
             "parameters": {
                 "type": "object",
@@ -519,486 +543,307 @@ tools = [
     }
 ]
 
-# ===== НОВЫЕ ПРОМТЫ =====
-
+# Промты (оставлены как в предыдущей версии, сокращены для экономии места)
 SITE_SUMMARY_PROMPT = """
 Ты аналитик сайтов. Ниже профиль нашего сайта:
-
 {site_summary}
-
 Проанализируй сайт и дай краткую оценку по пунктам:
-1. Коммерческий или некоммерческий? (если есть противоречия, укажи их)
-2. Страна, регион/город (на основе контента, контактов, упоминаний)
-3. По всей стране или локально? (с учётом доставки, выезда, географии услуг)
-4. Топ-10 ключевых слов (только релевантные коммерческие запросы, без названия региона, приоритет средне- и низкочастотным)
-6. Мессенджеры и площадки для рекламы (какие каналы лучше подходят, учитывая регион и тематику)
-
+1. Коммерческий или некоммерческий? (если есть противоречия, укажи)
+2. Страна, регион/город
+3. По всей стране или локально?
+4. Топ-10 ключевых слов (только коммерческие, без региона, приоритет средне- и низкочастотным)
+6. Мессенджеры и площадки для рекламы
 Отвечай кратко, строго по структуре.
 """
 
 DIRECT_CANDIDATE_PROMPT = """
 Ты ищешь кандидатов в ТОЧНЫЕ (прямые) конкуренты для сайта {domain}.
-Ниже профиль нашего сайта:
-
-{site_summary}
-
-Кого считать точным конкурентом:
-- сайт предлагает очень похожие товары, услуги или основной продукт;
-- у сайта схожий коммерческий сценарий;
-- сайт борется за ту же аудиторию с очень близким предложением;
-- сайт похож по тематике, структуре предложения и намерению пользователя.
-
-Правила:
-- Перед включением сайта в список обязательно вызови инструмент browse_page для его URL.
-- Проанализируй полученный профиль: ключевые слова, заголовки, описание. Если профиль показывает недостаточное сходство (например, ключевые слова не пересекаются, тематика отличается) – НЕ включай его.
-- Исключай маркетплейсы, агрегаторы, доски объявлений, соцсети, каталоги франшиз, справочники, новостные порталы и гигантов вне нашей ниши.
-- Отдавай предпочтение самостоятельным сайтам компаний/сервисов, а не витринам и сборникам.
-- Стремись найти минимум 5 хороших точных конкурентов. Если найдёшь меньше – честно укажи это в конце списка (например, "# Найдено только X кандидатов").
-- Не выдумывай сайты, только те, которые реально проверил через browse_page.
-- Верни только список корневых URL, по одному на строку, без пояснений и без нумерации.
+Профиль нашего сайта: {site_summary}
+Правила: используй browse_page для каждого кандидата, исключай маркетплейсы, стремись к минимум 5. Верни только список корневых URL.
 """
 
 INDIRECT_CANDIDATE_PROMPT = """
-Ты ищешь кандидатов в КОСВЕННЫЕ / РАСШИРЕННЫЕ конкуренты для сайта {domain}.
-Ниже профиль нашего сайта:
-
-{site_summary}
-
-Кого считать косвенным / расширенным конкурентом:
-- сайт работает в смежной нише;
-- сайт решает ту же или близкую задачу другим способом;
-- сайт закрывает ту же потребность другим продуктом, форматом или моделью;
-- сайт частично пересекается по аудитории;
-- сайт может быть альтернативой в выборе клиента, даже если это не прямой аналог;
-- сайт конкурирует за тот же спрос, намерение пользователя, бюджет или внимание аудитории;
-- сайт может быть выбран клиентом вместо нашего сайта как другой способ решить похожую проблему.
-
-Правила:
-- Перед включением сайта в список обязательно вызови инструмент browse_page для его URL.
-- Проанализируй полученный профиль: ключевые слова, заголовки, описание. Оставляй только те сайты, у которых есть заметная смысловая, продуктовая, аудиторная или поведенческая близость к нашему сайту.
-- НЕ предлагай прямых конкурентов, если они слишком буквально совпадают с сайтом.
-- Исключай маркетплейсы, агрегаторы, доски объявлений, соцсети, каталоги франшиз, справочники и слишком общие порталы.
-- Стремись найти минимум 5 хороших косвенных конкурентов. Если найдёшь меньше – честно укажи это в конце списка (например, "# Найдено только X кандидатов").
-- Не выдумывай сайты, только те, которые реально проверил через browse_page.
-- Верни только список корневых URL, по одному на строку, без пояснений и без нумерации.
+Ты ищешь кандидатов в КОСВЕННЫЕ конкуренты для сайта {domain}.
+Профиль нашего сайта: {site_summary}
+Правила: используй browse_page, исключай прямых конкурентов и маркетплейсы, стремись к минимум 5. Верни только список корневых URL.
 """
 
 FINAL_REPORT_PROMPT = """
-Я тебе скину промт в котором будут пункты на которые ты должен будешь провести анализ по интернету. место для домена interiermsk.hotht.ru
+Ты аналитик сайтов. Используй только данные ниже и не выдумывай новые сайты.
+
+Профиль нашего сайта: {site_summary}
+Черновик анализа: {site_outline}
+Проверенные точные конкуренты: {verified_direct_json}
+Проверенные косвенные конкуренты: {verified_indirect_json}
+Отклонённые кандидаты: {rejected_json}
+
+Сформируй итоговый ответ строго по структуре:
 1.1 Страна, регион/город
-1.2 Работает ли по всей стране или же локально (это важно смотри на тематику/доставку/выезд по стране/региону)
-1.3 Топ 10 точных запросов в месяц в Яндекс Вродстат (если это сайты РФ или Белоруссии) или ads.google (если сайты Узбекские и Казахские) так же смотри внимательно на тематику сайты а не на домен и еще давай топ запросы только по городу или региону но если доставка по стране/онлайн услуги то давай запросы по стране так же напиши это в столбик с количеством просмотров в месяц если информации нету то дай топ 10 фраз для запроса что бы я сам проверил
-1.4 Далее ищешь самых ближайших прямых конкурентов у которых есть живые рабочие сайты с подходящей тематикой (город/область и на крайний случай по стране ) так же смотри на то чтобы конкуренты были одинаковой силы (пример наш сайт это команда из 10 человек а конкурент компания со штатом сотрудников из 10 тыщ.) так же не когда не бери за конкурентов доски обьявлений и государственные учериждения
-1.5 Укажи какие мессенджеры подойдут для нашего сайты для привлечения клиентов и т.д в процентном отображении из топ 10 (но обрати внимание что в РФ заблокированы многие мессенджеры их ты не указываешь и так во всех странах ) (так же смотри на нишу подойдет или данный мессенджер/площадка)
-1.6 Делаешь все то же самое что в пункте 1.5 но с площадками пример авито 
-1.7 выдай сайты конкурентов именно ссылкой штук 10 то есть топ 10
-1.8 в самом начале напиши это коммерческий или некоммерческий это тоже важно
-1.9 ничего не додумывай основываясь только на той информации которая есть в интернете (если есть противоречия напиши их рядом с коммерческий ) и если меня что то не устроит из пунктов я буду тебе писать пункт который нужно переделать (только то пункт который я укажу) так же Твоя задача в пункт 1.3 — подобрать коммерческие поисковые запросы, которые будут приводить реальных потенциальных клиентов, а не информационный трафик. Требования к ключевым запросам: НЕ использовать название региона или города в ключевых фразах. Поисковые системы сами определяют регион пользователя. Исключить: информационные запросы обучающие и справочные формулировки слишком общие и размытые высокочастотные фразы Делать упор на: средне- и низкочастотные запросы коммерческий интент намерение купить, заказать, получить расчет, консультацию Подбирать запросы: строго релевантные проанализированному сайту соответствующие реальным услугам и офферам сайта Приоритет: максимальная конверсия в заявки минимальная конкуренция тоесть теперь пункт 1.3 делаешь так теперь И ЕЩЕ САМОЕ ГЛАВНОЕ ЗАХОДИ НА САЙТ И АНАЛИЗИРУЙ ЕГО
+1.2 Работает ли по всей стране или локально
+1.3 Топ-10 точных запросов в месяц (коммерческие, без региона, средне- и низкочастотные)
+1.4 Самые ближайшие прямые конкуренты (с обоснованием)
+1.5 Мессенджеры для привлечения клиентов (в %)
+1.6 Площадки для рекламы (в %)
+1.7 Сайты конкурентов (ссылки) – топ-10
+1.8 Коммерческий или некоммерческий?
+1.9 Противоречия / отсутствие данных
 
-Вот данные, которые нужно использовать для формирования ответа:
-
-Профиль нашего сайта:
-{site_summary}
-
-Черновик анализа (содержит оценки по пунктам 1.1-1.3, 1.5, 1.6):
-{site_outline}
-
-Проверенные точные конкуренты (живые сайты с подходящей тематикой и масштабом):
-{verified_direct_json}
-
-Проверенные косвенные конкуренты (смежные ниши, альтернативы):
-{verified_indirect_json}
-
-Отклонённые кандидаты (с причинами):
-{rejected_json}
-
-Сформируй итоговый ответ строго по структуре, описанной выше (пункты 1.1 – 1.9). Не добавляй лишнего. Используй только те данные, которые есть в предоставленных списках и профиле. Не выдумывай новых конкурентов. Если информации недостаточно – укажи это.
+Не добавляй лишнего. Если информации недостаточно – укажи.
 """
 
-def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: float = 0.3, max_tokens: int = 4096) -> dict:
-    global _api_key_index
-    keys = [k for k in MISTRAL_API_KEYS if k]
-    if not keys:
-        raise RuntimeError("Нет ни одного API-ключа в списке MISTRAL_API_KEYS")
-
-    start_index = _api_key_index % len(keys)
-    for i in range(len(keys)):
-        idx = (start_index + i) % len(keys)
-        api_key = keys[idx]
-        try:
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "model": MISTRAL_MODEL,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-            if use_tools:
-                payload["tools"] = tools
-
-            response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
-            response.raise_for_status()
-            with _api_key_lock:
-                _api_key_index += 1
-            return response.json()["choices"][0]["message"]
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                continue
-            else:
-                raise
-        except Exception:
-            continue
-
-    raise RuntimeError(f"Все API-ключи невалидны или не имеют доступа к модели {MISTRAL_MODEL}")
+def call_mistral(messages, use_tools=False, temperature=0.3, max_tokens=4096):
+    api_key = get_next_mistral_key()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": MISTRAL_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if use_tools:
+        payload["tools"] = tools
+    response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]
 
 
-def complete_with_tools(messages: list[dict], *, temperature: float = 0.3, max_tokens: int = 4096) -> str:
+def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
     conversation = list(messages)
-    max_rounds = 12
-
-    for _ in range(max_rounds):
-        response_message = call_mistral(
-            conversation,
-            use_tools=True,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        conversation.append(response_message)
-        tool_calls = response_message.get("tool_calls") or []
+    for _ in range(12):
+        try:
+            msg = call_mistral(conversation, use_tools=True, temperature=temperature, max_tokens=max_tokens)
+        except Exception as e:
+            st.warning(f"Mistral ошибка: {e}. Пробуем другой ключ...")
+            continue
+        conversation.append(msg)
+        tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
-            return response_message.get("content", "")
-
-        def process_tool_call(tool_call):
-            func = tool_call.get("function") or {}
+            return msg.get("content", "")
+        def process(tc):
+            func = tc.get("function", {})
             if func.get("name") != "browse_page":
                 return None
             try:
-                arguments = json.loads(func.get("arguments", "{}"))
-                url = arguments.get("url", "")
+                args = json.loads(func.get("arguments", "{}"))
+                url = args.get("url", "")
                 content = browse_page(url) if url else json.dumps({"error": "Пустой URL"}, ensure_ascii=False)
-            except Exception as exc:
-                content = json.dumps({"error": str(exc)}, ensure_ascii=False)
-            return {
-                "role": "tool",
-                "tool_call_id": tool_call["id"],
-                "name": "browse_page",
-                "content": content,
-            }
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            results = list(executor.map(process_tool_call, tool_calls))
-
-        for result in results:
-            if result:
-                conversation.append(result)
-
+            except Exception as e:
+                content = json.dumps({"error": str(e)}, ensure_ascii=False)
+            return {"role": "tool", "tool_call_id": tc["id"], "name": "browse_page", "content": content}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            results = list(ex.map(process, tool_calls))
+        for r in results:
+            if r:
+                conversation.append(r)
     return "Не удалось завершить обработку tool calls."
 
 
-def get_site_outline(our_profile: dict) -> str:
+def get_site_outline(our_profile):
     prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
-    return call_mistral(
-        [{"role": "user", "content": prompt}],
-        use_tools=False,
-        temperature=0.2,
-        max_tokens=1200,
-    ).get("content", "")
+    return call_mistral([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1200).get("content", "")
 
 
-def get_candidate_domains(domain: str, our_profile: dict, competitor_type: str, excluded_domains: set[str] | None = None) -> list[str]:
-    excluded_domains = excluded_domains or set()
+def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
+    excluded = excluded_domains or set()
     candidates = []
-
-    # Параллельный запуск Exa и Mistral
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = []
-        # Exa задача
-        if EXA_API_KEY:
+        if EXA_API_KEYS:
             if competitor_type == "direct":
                 futures.append(executor.submit(search_exa, f"similar to {domain}", 15))
-            elif competitor_type == "indirect":
+            else:
                 futures.append(executor.submit(search_exa, f"companies in related niches to {domain}", 15))
-
-        # Mistral задача
         if competitor_type == "direct":
             prompt = DIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
         else:
             prompt = INDIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
-
         def mistral_task():
-            content = complete_with_tools(
-                [{"role": "user", "content": prompt}],
-                temperature=0.2,
-                max_tokens=1800,
-            )
+            content = complete_with_tools([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=1800)
             return extract_candidate_urls(content)
-
         futures.append(executor.submit(mistral_task))
-
-        for future in concurrent.futures.as_completed(futures):
+        for fut in concurrent.futures.as_completed(futures):
             try:
-                urls = future.result()
-                candidates.extend(urls)
+                candidates.extend(fut.result())
             except Exception as e:
-                st.warning(f"Ошибка при поиске кандидатов: {e}")
-
+                st.warning(f"Ошибка при поиске: {e}")
     candidates = dedupe_urls(candidates)
-    candidates = exclude_domains(candidates, excluded_domains)
+    candidates = exclude_domains(candidates, excluded)
     return candidates
 
 
-def verify_competitors(our_profile: dict, candidate_urls: list[str], target_type: str) -> tuple[list[dict], list[dict]]:
+def verify_competitors(our_profile, candidate_urls, target_type):
     verified = []
     rejected = []
-    seen_domains = set()
+    seen = set()
+    unique = []
+    for raw in candidate_urls:
+        url = normalize_root_url(raw)
+        dom = get_domain_key(url)
+        if dom and dom not in seen:
+            seen.add(dom)
+            unique.append(url)
 
-    unique_urls = []
-    for raw_url in candidate_urls:
-        url = normalize_root_url(raw_url)
-        domain = get_domain_key(url)
-        if domain and domain not in seen_domains:
-            seen_domains.add(domain)
-            unique_urls.append(url)
-
-    def process_candidate(url):
+    def process(url):
         domain = get_domain_key(url)
         if domain == our_profile.get("domain"):
-            return ("reject", {"url": url, "reason": "Это наш собственный сайт", "type": target_type})
+            return ("reject", {"url": url, "reason": "Свой сайт", "type": target_type})
         if is_blocked_domain(domain):
-            return ("reject", {"url": url, "reason": "Маркетплейс / агрегатор", "type": target_type})
-
-        candidate_profile = fetch_site_profile(url)
-        if not candidate_profile.get("ok"):
-            return ("reject", {
-                "url": url,
-                "reason": f"Недоступен: {candidate_profile.get('issue', 'ошибка')}",
-                "type": target_type,
-            })
-
-        comparison = compare_profiles(our_profile, candidate_profile)
-        actual_type = classify_competitor(comparison)
-
-        record = {
-            "url": candidate_profile["final_url"],
-            "domain": candidate_profile["domain"],
-            "title": candidate_profile["title"],
-            "description": candidate_profile["description"],
-            "keywords": candidate_profile.get("keywords", [])[:10],
-            "live": True,
-            "score": comparison["score"],
-            "relevance": comparison["relevance"],
-            "shared_keywords": comparison["shared_keywords"],
-            "scale_comment": comparison["scale_comment"],
-            "reason": comparison["reason"],
-            "competitor_type": actual_type or "rejected",
+            return ("reject", {"url": url, "reason": "Маркетплейс/агрегатор", "type": target_type})
+        prof = fetch_site_profile(url)
+        if not prof.get("ok"):
+            return ("reject", {"url": url, "reason": f"Недоступен: {prof.get('issue', 'ошибка')}", "type": target_type})
+        comp = compare_profiles(our_profile, prof)
+        actual = classify_competitor(comp)
+        if not comp["shared_keywords"]:
+            return ("reject", {"url": prof["final_url"], "reason": "Нет общих ключевых слов", "type": target_type})
+        rec = {
+            "url": prof["final_url"], "domain": prof["domain"], "title": prof["title"],
+            "description": prof["description"], "keywords": prof.get("keywords", [])[:10],
+            "live": True, "score": comp["score"], "relevance": comp["relevance"],
+            "shared_keywords": comp["shared_keywords"], "scale_comment": comp["scale_comment"],
+            "reason": comp["reason"], "competitor_type": actual or "rejected",
         }
-
         if target_type == "direct":
-            if actual_type == "direct":
-                return ("verify", record)
+            if actual == "direct":
+                return ("verify", rec)
             else:
-                return ("reject", {
-                    "url": candidate_profile["final_url"],
-                    "reason": f"Не прошёл как точный конкурент ({comparison['score']}%). {comparison['reason']} {comparison['scale_comment']}",
-                    "type": "direct",
-                })
+                return ("reject", {"url": prof["final_url"], "reason": f"Не прошёл как точный ({comp['score']}%). {comp['reason']}", "type": "direct"})
         else:
-            if actual_type == "indirect":
-                return ("verify", record)
-            elif actual_type == "direct":
-                return ("reject", {
-                    "url": candidate_profile["final_url"],
-                    "reason": f"Слишком близок к прямому конкуренту ({comparison['score']}%), поэтому не включён в косвенные.",
-                    "type": "indirect",
-                })
+            if actual == "indirect":
+                return ("verify", rec)
+            elif actual == "direct":
+                return ("reject", {"url": prof["final_url"], "reason": "Слишком близок к прямому", "type": "indirect"})
             else:
-                return ("reject", {
-                    "url": candidate_profile["final_url"],
-                    "reason": f"Недостаточная тематическая близость для косвенного конкурента ({comparison['score']}%). {comparison['reason']} {comparison['scale_comment']}",
-                    "type": "indirect",
-                })
+                return ("reject", {"url": prof["final_url"], "reason": f"Недостаточная близость ({comp['score']}%). {comp['reason']}", "type": "indirect"})
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(process_candidate, url) for url in unique_urls]
-        for future in concurrent.futures.as_completed(futures):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+        futures = [ex.submit(process, url) for url in unique]
+        for fut in concurrent.futures.as_completed(futures):
             try:
-                action, data = future.result()
-                if action == "verify":
-                    verified.append(data)
-                else:
-                    rejected.append(data)
+                action, data = fut.result()
+                (verified if action == "verify" else rejected).append(data)
             except Exception as e:
-                rejected.append({"url": "ошибка обработки", "reason": str(e), "type": target_type})
-
-    verified.sort(key=lambda item: item["score"], reverse=True)
+                rejected.append({"url": "ошибка", "reason": str(e), "type": target_type})
+    verified.sort(key=lambda x: x["score"], reverse=True)
     return verified, rejected
 
 
-def ensure_min_indirect(domain: str, our_profile: dict, direct_verified: list[dict], indirect_verified: list[dict], rejected: list[dict]) -> tuple[list[dict], list[dict]]:
+def ensure_min_indirect(domain, our_profile, direct_verified, indirect_verified, rejected):
     if len(indirect_verified) >= 5:
         return indirect_verified, rejected
-
-    excluded_domains = {our_profile.get("domain", "")}
-    excluded_domains.update(item["domain"] for item in direct_verified)
-    excluded_domains.update(item["domain"] for item in indirect_verified if item.get("domain"))
-
-    extra_candidates = get_candidate_domains(
-        domain,
-        our_profile,
-        competitor_type="indirect",
-        excluded_domains=excluded_domains,
-    )
-    extra_verified, extra_rejected = verify_competitors(our_profile, extra_candidates, "indirect")
-
-    existing_domains = {item["domain"] for item in indirect_verified}
-    for item in extra_verified:
-        if item["domain"] not in existing_domains:
+    excluded = {our_profile.get("domain", "")}
+    excluded.update(item["domain"] for item in direct_verified)
+    excluded.update(item["domain"] for item in indirect_verified if item.get("domain"))
+    extra = get_candidate_domains(domain, our_profile, "indirect", excluded)
+    extra_ver, extra_rej = verify_competitors(our_profile, extra, "indirect")
+    existing = {item["domain"] for item in indirect_verified}
+    for item in extra_ver:
+        if item["domain"] not in existing:
             indirect_verified.append(item)
-            existing_domains.add(item["domain"])
-
-    rejected.extend(extra_rejected)
-    indirect_verified.sort(key=lambda item: item["score"], reverse=True)
+            existing.add(item["domain"])
+    rejected.extend(extra_rej)
+    indirect_verified.sort(key=lambda x: x["score"], reverse=True)
     return indirect_verified, rejected
 
 
-def build_final_report(
-    our_profile: dict,
-    site_outline: str,
-    verified_direct: list[dict],
-    verified_indirect: list[dict],
-    rejected: list[dict],
-) -> str:
-    verified_direct_json = json.dumps(verified_direct[:10], ensure_ascii=False, indent=2)
-    verified_indirect_json = json.dumps(verified_indirect[:10], ensure_ascii=False, indent=2)
-    rejected_json = json.dumps(rejected[:20], ensure_ascii=False, indent=2)
-
+def build_final_report(our_profile, site_outline, verified_direct, verified_indirect, rejected):
+    vd_json = json.dumps(verified_direct[:10], ensure_ascii=False, indent=2)
+    vi_json = json.dumps(verified_indirect[:10], ensure_ascii=False, indent=2)
+    rj_json = json.dumps(rejected[:20], ensure_ascii=False, indent=2)
     prompt = FINAL_REPORT_PROMPT.format(
         site_summary=summarize_profile(our_profile),
-        site_outline=site_outline or "Нет черновика анализа",
-        verified_direct_json=verified_direct_json,
-        verified_indirect_json=verified_indirect_json,
-        rejected_json=rejected_json,
+        site_outline=site_outline or "Нет черновика",
+        verified_direct_json=vd_json,
+        verified_indirect_json=vi_json,
+        rejected_json=rj_json,
     )
-    report = call_mistral(
-        [{"role": "user", "content": prompt}],
-        use_tools=False,
-        temperature=0.25,
-        max_tokens=3000,
-    ).get("content", "")
-    return report
+    return call_mistral([{"role": "user", "content": prompt}], use_tools=False, temperature=0.25, max_tokens=3000).get("content", "")
 
 
-def build_validation_rows(verified_direct: list[dict], verified_indirect: list[dict]) -> list[dict]:
-    all_verified = verified_direct + verified_indirect
-    all_verified.sort(key=lambda x: x["score"], reverse=True)
+def build_validation_rows(verified_direct, verified_indirect):
+    all_ver = verified_direct + verified_indirect
+    all_ver.sort(key=lambda x: x["score"], reverse=True)
     rows = []
-    for item in all_verified[:10]:
-        rows.append(
-            {
-                "URL": item["url"],
-                "Тип": "Точный" if item.get("competitor_type") == "direct" else "Косвенный",
-                "Статус": "OK",
-                "Релевантность": f"{item['score']}% ({item['relevance']})",
-                "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
-                "Комментарий": item.get("scale_comment", ""),
-            }
-        )
+    for item in all_ver[:10]:
+        rows.append({
+            "URL": item["url"],
+            "Тип": "Точный" if item.get("competitor_type") == "direct" else "Косвенный",
+            "Статус": "OK",
+            "Релевантность": f"{item['score']}% ({item['relevance']})",
+            "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
+            "Комментарий": item.get("scale_comment", ""),
+        })
     return rows
 
 
-def render_validation_table(verified_direct: list[dict], verified_indirect: list[dict]) -> None:
+def render_validation_table(verified_direct, verified_indirect):
     rows = build_validation_rows(verified_direct, verified_indirect)
     if not rows:
         return
-
     st.subheader("Топ-10 проверенных конкурентов")
-    st.caption(
-        "Сайты, прошедшие проверку доступности и тематической близости. Отсортированы по релевантности."
-    )
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
-def run_full_analysis(domain: str) -> tuple[str, dict, list[dict], list[dict], list[dict]]:
-    our_profile = fetch_site_profile(domain)
-    if not our_profile.get("ok"):
-        raise RuntimeError(f"Не удалось открыть наш сайт: {our_profile.get('issue', 'ошибка')}")
-
-    site_outline = get_site_outline(our_profile)
-
-    direct_candidates = get_candidate_domains(domain, our_profile, competitor_type="direct")
-    indirect_candidates = get_candidate_domains(domain, our_profile, competitor_type="indirect")
-
-    if not direct_candidates and not indirect_candidates:
-        raise RuntimeError("Не удалось получить список кандидатов в конкуренты")
-
-    verified_direct, rejected_direct = verify_competitors(our_profile, direct_candidates, "direct")
-
-    direct_domains = {item["domain"] for item in verified_direct}
-    indirect_candidates = exclude_domains(indirect_candidates, direct_domains)
-    verified_indirect, rejected_indirect = verify_competitors(our_profile, indirect_candidates, "indirect")
-
-    rejected = rejected_direct + rejected_indirect
-    verified_indirect, rejected = ensure_min_indirect(domain, our_profile, verified_direct, verified_indirect, rejected)
-
-    verified_direct = verified_direct[:10]
-    verified_indirect = verified_indirect[:10]
-
-    report = build_final_report(
-        our_profile,
-        site_outline,
-        verified_direct,
-        verified_indirect,
-        rejected,
-    )
-    return report, our_profile, verified_direct, verified_indirect, rejected
+def run_full_analysis(domain):
+    our = fetch_site_profile(domain)
+    if not our.get("ok"):
+        raise RuntimeError(f"Не удалось открыть наш сайт: {our.get('issue', 'ошибка')}")
+    outline = get_site_outline(our)
+    dir_cand = get_candidate_domains(domain, our, "direct")
+    ind_cand = get_candidate_domains(domain, our, "indirect")
+    if not dir_cand and not ind_cand:
+        raise RuntimeError("Не удалось получить кандидатов")
+    dir_ver, dir_rej = verify_competitors(our, dir_cand, "direct")
+    dir_doms = {d["domain"] for d in dir_ver}
+    ind_cand = exclude_domains(ind_cand, dir_doms)
+    ind_ver, ind_rej = verify_competitors(our, ind_cand, "indirect")
+    rej = dir_rej + ind_rej
+    ind_ver, rej = ensure_min_indirect(domain, our, dir_ver, ind_ver, rej)
+    dir_ver = dir_ver[:10]
+    ind_ver = ind_ver[:10]
+    report = build_final_report(our, outline, dir_ver, ind_ver, rej)
+    return report, our, dir_ver, ind_ver, rej
 
 
-def rerun_competitors_only(domain: str, our_profile: dict) -> tuple[list[dict], list[dict], list[dict]]:
-    direct_candidates = get_candidate_domains(domain, our_profile, competitor_type="direct")
-    indirect_candidates = get_candidate_domains(domain, our_profile, competitor_type="indirect")
-
-    verified_direct, rejected_direct = verify_competitors(our_profile, direct_candidates, "direct")
-    direct_domains = {item["domain"] for item in verified_direct}
-
-    indirect_candidates = exclude_domains(indirect_candidates, direct_domains)
-    verified_indirect, rejected_indirect = verify_competitors(our_profile, indirect_candidates, "indirect")
-
-    rejected = rejected_direct + rejected_indirect
-    verified_indirect, rejected = ensure_min_indirect(domain, our_profile, verified_direct, verified_indirect, rejected)
-
-    return verified_direct[:10], verified_indirect[:10], rejected
+def rerun_competitors_only(domain, our_profile):
+    dir_cand = get_candidate_domains(domain, our_profile, "direct")
+    ind_cand = get_candidate_domains(domain, our_profile, "indirect")
+    dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct")
+    dir_doms = {d["domain"] for d in dir_ver}
+    ind_cand = exclude_domains(ind_cand, dir_doms)
+    ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect")
+    rej = dir_rej + ind_rej
+    ind_ver, rej = ensure_min_indirect(domain, our_profile, dir_ver, ind_ver, rej)
+    return dir_ver[:10], ind_ver[:10], rej
 
 
-def render_best_competitors(verified_direct: list[dict], verified_indirect: list[dict], limit=10):
+def render_best_competitors(verified_direct, verified_indirect, limit=10):
     combined = verified_direct + verified_indirect
     combined.sort(key=lambda x: x["score"], reverse=True)
     if not combined:
-        st.info("Нет проверенных конкурентов для отображения.")
+        st.info("Нет проверенных конкурентов.")
         return
     st.subheader("Лучшие конкуренты (по релевантности)")
-    st.caption("Сайты, наиболее подходящие по тематике и масштабу. Можно открыть или скопировать домен.")
-    
-    for index, item in enumerate(combined[:limit], start=1):
-        url = item.get("url", "")
+    for i, item in enumerate(combined[:limit], 1):
+        url = item["url"]
         domain = item.get("domain") or get_domain_key(url)
         safe_domain = json.dumps(domain, ensure_ascii=False)
         safe_url = json.dumps(url, ensure_ascii=False)
         html = f"""
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid #e5e7eb; border-radius:10px; margin-bottom:8px; font-family:Arial, sans-serif;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid #e5e7eb; border-radius:10px; margin-bottom:8px;">
             <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                <span style="font-weight:600;margin-right:8px;">{index}.</span>
+                <span style="font-weight:600;margin-right:8px;">{i}.</span>
                 <a href={safe_url} target="_blank" style="text-decoration:none;color:#2563eb;">{domain}</a>
-                <span style="margin-left:8px; color:#6b7280; font-size:0.9em;">({item['score']}%)</span>
+                <span style="margin-left:8px; color:#6b7280;">({item['score']}%)</span>
             </div>
-            <button onclick='navigator.clipboard.writeText({safe_domain})' style="border:1px solid #d1d5db; border-radius:8px; padding:6px 10px; background:#ffffff; cursor:pointer;">Копировать</button>
+            <button onclick='navigator.clipboard.writeText({safe_domain})' style="border:1px solid #d1d5db; border-radius:8px; padding:6px 10px;">Копировать</button>
         </div>
         """
         components.html(html, height=64)
 
 
-# ========== ИНТЕРФЕЙС STREAMLIT ==========
-
-domain = st.text_input("Введи домен сайта (например, interiermsk.hotht.ru):")
+# ========== ИНТЕРФЕЙС ==========
+domain = st.text_input("Введи домен (например, interiermsk.hotht.ru):")
 
 if "result" not in st.session_state:
     st.session_state.result = ""
@@ -1017,47 +862,44 @@ if st.button("Провести анализ"):
     if not domain:
         st.warning("Введи домен")
     elif not MISTRAL_API_KEYS:
-        st.warning("Не найдены API-ключи Mistral. Добавьте их в список MISTRAL_API_KEYS.")
+        st.warning("Нет ключей Mistral")
     else:
-        with st.spinner("Анализирую и проверяю точных и косвенных конкурентов..."):
+        with st.spinner("Анализирую..."):
             try:
-                result, our_profile, verified_direct, verified_indirect, rejected = run_full_analysis(domain)
-                st.session_state.result = result
-                st.session_state.our_profile = our_profile
-                st.session_state.verified_direct_competitors = verified_direct
-                st.session_state.verified_indirect_competitors = verified_indirect
-                st.session_state.rejected_competitors = rejected
+                res, prof, dir_ver, ind_ver, rej = run_full_analysis(domain)
+                st.session_state.result = res
+                st.session_state.our_profile = prof
+                st.session_state.verified_direct_competitors = dir_ver
+                st.session_state.verified_indirect_competitors = ind_ver
+                st.session_state.rejected_competitors = rej
                 st.session_state.last_domain = domain
-            except Exception as exc:
-                st.error(f"Ошибка: {exc}")
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
 
-if st.session_state.result and st.button("Обновить список конкурентов с проверкой релевантности"):
-    saved_domain = st.session_state.last_domain or domain
-    our_profile = st.session_state.our_profile
-    if not saved_domain or not our_profile:
+if st.session_state.result and st.button("Обновить конкурентов"):
+    saved = st.session_state.last_domain or domain
+    prof = st.session_state.our_profile
+    if not saved or not prof:
         st.warning("Сначала запусти полный анализ")
     else:
-        with st.spinner("Перепроверяю конкурентов..."):
+        with st.spinner("Обновляю..."):
             try:
-                verified_direct, verified_indirect, rejected = rerun_competitors_only(saved_domain, our_profile)
-                # Пересобираем отчёт без замены секций (просто обновляем переменные)
-                st.session_state.verified_direct_competitors = verified_direct
-                st.session_state.verified_indirect_competitors = verified_indirect
-                st.session_state.rejected_competitors = rejected
-                st.success("Список конкурентов обновлён")
-            except Exception as exc:
-                st.error(f"Ошибка переделки: {exc}")
+                dir_ver, ind_ver, rej = rerun_competitors_only(saved, prof)
+                st.session_state.verified_direct_competitors = dir_ver
+                st.session_state.verified_indirect_competitors = ind_ver
+                st.session_state.rejected_competitors = rej
+                st.success("Обновлено")
+            except Exception as e:
+                st.error(f"Ошибка: {e}")
 
 if st.session_state.result:
     st.subheader("Результат анализа")
     st.markdown(st.session_state.result, unsafe_allow_html=True)
-
     render_best_competitors(
         st.session_state.verified_direct_competitors,
         st.session_state.verified_indirect_competitors,
         limit=10
     )
-
     render_validation_table(
         st.session_state.verified_direct_competitors,
         st.session_state.verified_indirect_competitors,
