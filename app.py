@@ -101,7 +101,7 @@ STOPWORDS = {
     "контакты", "contact", "contacts", "ru", "com", "org", "net", "www", "http", "https",
 }
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (без изменений) ==========
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
@@ -541,7 +541,7 @@ tools = [
     }
 ]
 
-# Промты
+# Промты (оставлены без изменений)
 SITE_SUMMARY_PROMPT = """
 Ты аналитик сайтов. Ниже профиль нашего сайта:
 {site_summary}
@@ -741,26 +741,17 @@ def get_site_outline(our_profile):
 def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
     candidates = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        futures = []
-        if EXA_API_KEYS:
-            if competitor_type == "direct":
-                futures.append(executor.submit(search_exa, f"similar to {domain}", 15))
-            else:
-                futures.append(executor.submit(search_exa, f"companies in related niches to {domain}", 15))
-        if competitor_type == "direct":
-            prompt = DIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
-        else:
-            prompt = INDIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
-        def mistral_task():
-            content = complete_with_tools([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=1800)
-            return extract_candidate_urls(content)
-        futures.append(executor.submit(mistral_task))
-        for fut in concurrent.futures.as_completed(futures):
-            try:
-                candidates.extend(fut.result())
-            except Exception as e:
-                st.warning(f"Ошибка при поиске: {e}")
+
+    # Поиск через Exa (надёжный, без LLM)
+    if competitor_type == "direct":
+        exa_urls = search_exa(f"similar to {domain}", num_results=20)  # увеличил количество
+    else:
+        exa_urls = search_exa(f"companies in related niches to {domain}", num_results=20)
+    candidates.extend(exa_urls)
+
+    # Если Exa ничего не дал, можно добавить поиск через текст LLM (без tools) как запасной вариант
+    # Но пока оставим только Exa, так как он стабилен.
+
     candidates = dedupe_urls(candidates)
     candidates = exclude_domains(candidates, excluded)
     return candidates
@@ -797,11 +788,9 @@ def verify_competitors(our_profile, candidate_urls, target_type):
 
         comparison = compare_profiles(our_profile, candidate_profile)
 
-        # Если score низкий, дальше не идём
         if comparison["score"] < 10:
             return ("reject", {"url": candidate_profile["final_url"], "reason": f"Низкая оценка сходства ({comparison['score']}%)", "type": target_type})
 
-        # LLM-проверка релевантности
         if not is_relevant_competitor(our_profile, candidate_profile):
             return ("reject", {"url": candidate_profile["final_url"], "reason": "Не является релевантным конкурентом по оценке LLM", "type": target_type})
 
