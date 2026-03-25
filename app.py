@@ -17,10 +17,10 @@ st.title("Конкурентный Анализатор")
 # ===== НАСТРОЙКА API-КЛЮЧЕЙ =====
 # Mistral (основные)
 MISTRAL_API_KEYS = [
-    "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR",
-    "RciSeumN9OBaOuhUNcQ0ynbjKSVkw6kF",
-    "jMinLgK9DSNsMJ6gSQM7yATFNRfoOvxx",
-    "hzCXFKU2QmiHcVN7nbuHWSDKCkqW29MJ",
+    "Uhe6aUiDHbDt65zSYCIPAvbhSlLUPjm2",
+    "Ykp3WqDN2U4wm8AlVa2w9O7c5oGwhsj6",
+    "kUPvmzTwEnIXIxRMAidE28OlzZl3M8qm",
+    "",
 ]
 
 # Groq (резерв)
