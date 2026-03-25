@@ -25,9 +25,10 @@ MISTRAL_API_KEYS = [
 ]
 
 # Ключ Exa AI (для поиска похожих сайтов)
-EXA_API_KEY = "5c8f7269-38ce-4f0d-8059-de075646d002"
+EXA_API_KEY = "3d9ba739-d0ca-4c27-9be5-5d0543944737"
 
-# Jina Reader – публичный эндпоинт, ключ не обязателен
+# Ключ Jina Reader (для улучшенного извлечения контента)
+JINA_API_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
 JINA_READER_URL = "https://r.jina.ai/"
 
 MISTRAL_MODEL = "mistral-small-latest"
@@ -73,7 +74,7 @@ STOPWORDS = {
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
-    """Пытается получить профиль сайта: сначала через Jina Reader, затем через прямой парсинг."""
+    """Пытается получить профиль сайта: сначала через Jina Reader (с ключом, если есть), затем через прямой парсинг."""
     variants = build_url_variants(url_or_domain)
     last_error = "Не удалось открыть сайт"
 
@@ -81,7 +82,10 @@ def fetch_site_profile(url_or_domain: str) -> dict:
         # Попробуем сначала Jina Reader
         try:
             jina_url = JINA_READER_URL + candidate
-            response = requests.get(jina_url, timeout=15)
+            jina_headers = {}
+            if JINA_API_KEY:
+                jina_headers["Authorization"] = f"Bearer {JINA_API_KEY}"
+            response = requests.get(jina_url, headers=jina_headers, timeout=15)
             if response.status_code == 200:
                 markdown = response.text
                 # Извлекаем заголовок (первый #)
@@ -515,20 +519,21 @@ tools = [
     }
 ]
 
-# ===== УЛУЧШЕННЫЕ ПРОМТЫ =====
+# ===== НОВЫЕ ПРОМТЫ =====
+
 SITE_SUMMARY_PROMPT = """
 Ты аналитик сайтов. Ниже профиль нашего сайта:
 
 {site_summary}
 
-Сделай краткую оценку по пунктам 1-4 и 6. Не выдумывай недоступные факты. Если уверенности нет — прямо укажи, что это предположение или данных недостаточно.
+Проанализируй сайт и дай краткую оценку по пунктам:
+1. Коммерческий или некоммерческий? (если есть противоречия, укажи их)
+2. Страна, регион/город (на основе контента, контактов, упоминаний)
+3. По всей стране или локально? (с учётом доставки, выезда, географии услуг)
+4. Топ-10 ключевых слов (только релевантные коммерческие запросы, без названия региона, приоритет средне- и низкочастотным)
+6. Мессенджеры и площадки для рекламы (какие каналы лучше подходят, учитывая регион и тематику)
 
-Структура ответа строго такая:
-1. Коммерческий или некоммерческий?
-2. Страна, регион/город:
-3. По всей стране или локально?
-4. Топ-10 запросов (используй ключевые слова из профиля сайта, не выдумывай):
-6. Мессенджеры и площадки для рекламы (какие каналы и площадки лучше всего подходят для продвижения сайта, исходя из его тематики и аудитории):
+Отвечай кратко, строго по структуре.
 """
 
 DIRECT_CANDIDATE_PROMPT = """
@@ -579,44 +584,36 @@ INDIRECT_CANDIDATE_PROMPT = """
 """
 
 FINAL_REPORT_PROMPT = """
-Ты аналитик сайтов. Используй только данные ниже и не выдумывай новые сайты.
+Я тебе скину промт в котором будут пункты на которые ты должен будешь провести анализ по интернету. место для домена interiermsk.hotht.ru
+1.1 Страна, регион/город
+1.2 Работает ли по всей стране или же локально (это важно смотри на тематику/доставку/выезд по стране/региону)
+1.3 Топ 10 точных запросов в месяц в Яндекс Вродстат (если это сайты РФ или Белоруссии) или ads.google (если сайты Узбекские и Казахские) так же смотри внимательно на тематику сайты а не на домен и еще давай топ запросы только по городу или региону но если доставка по стране/онлайн услуги то давай запросы по стране так же напиши это в столбик с количеством просмотров в месяц если информации нету то дай топ 10 фраз для запроса что бы я сам проверил
+1.4 Далее ищешь самых ближайших прямых конкурентов у которых есть живые рабочие сайты с подходящей тематикой (город/область и на крайний случай по стране ) так же смотри на то чтобы конкуренты были одинаковой силы (пример наш сайт это команда из 10 человек а конкурент компания со штатом сотрудников из 10 тыщ.) так же не когда не бери за конкурентов доски обьявлений и государственные учериждения
+1.5 Укажи какие мессенджеры подойдут для нашего сайты для привлечения клиентов и т.д в процентном отображении из топ 10 (но обрати внимание что в РФ заблокированы многие мессенджеры их ты не указываешь и так во всех странах ) (так же смотри на нишу подойдет или данный мессенджер/площадка)
+1.6 Делаешь все то же самое что в пункте 1.5 но с площадками пример авито 
+1.7 выдай сайты конкурентов именно ссылкой штук 10 то есть топ 10
+1.8 в самом начале напиши это коммерческий или некоммерческий это тоже важно
+1.9 ничего не додумывай основываясь только на той информации которая есть в интернете (если есть противоречия напиши их рядом с коммерческий ) и если меня что то не устроит из пунктов я буду тебе писать пункт который нужно переделать (только то пункт который я укажу) так же Твоя задача в пункт 1.3 — подобрать коммерческие поисковые запросы, которые будут приводить реальных потенциальных клиентов, а не информационный трафик. Требования к ключевым запросам: НЕ использовать название региона или города в ключевых фразах. Поисковые системы сами определяют регион пользователя. Исключить: информационные запросы обучающие и справочные формулировки слишком общие и размытые высокочастотные фразы Делать упор на: средне- и низкочастотные запросы коммерческий интент намерение купить, заказать, получить расчет, консультацию Подбирать запросы: строго релевантные проанализированному сайту соответствующие реальным услугам и офферам сайта Приоритет: максимальная конверсия в заявки минимальная конкуренция тоесть теперь пункт 1.3 делаешь так теперь И ЕЩЕ САМОЕ ГЛАВНОЕ ЗАХОДИ НА САЙТ И АНАЛИЗИРУЙ ЕГО
+
+Вот данные, которые нужно использовать для формирования ответа:
 
 Профиль нашего сайта:
 {site_summary}
 
-Черновик анализа:
+Черновик анализа (содержит оценки по пунктам 1.1-1.3, 1.5, 1.6):
 {site_outline}
 
-Проверенные точные конкуренты:
+Проверенные точные конкуренты (живые сайты с подходящей тематикой и масштабом):
 {verified_direct_json}
 
-Проверенные косвенные конкуренты:
+Проверенные косвенные конкуренты (смежные ниши, альтернативы):
 {verified_indirect_json}
 
-Отклонённые кандидаты:
+Отклонённые кандидаты (с причинами):
 {rejected_json}
 
-Сформируй итоговый ответ строго по структуре:
-1. Коммерческий или некоммерческий?
-2. Страна, регион/город:
-3. По всей стране или локально?
-4. Топ-10 запросов (используй реальные ключевые слова из профиля нашего сайта, не выдумывай):
-5. Точные конкуренты (коротко: живой? тематика? масштаб? релевантность?) – только из списка проверенных точных конкурентов:
-6. Мессенджеры и площадки для рекламы (какие каналы и площадки лучше всего подходят для продвижения сайта, исходя из его тематики и аудитории):
-7. Точные конкуренты (ссылки):
-8. Конкуренты:
-   - Отличные конкуренты (прямые): (перечислить сайты из списка точных конкурентов, которые наиболее релевантны, с кратким пояснением)
-   - Подходящие (косвенные/расширенные): (перечислить сайты из списка косвенных конкурентов, которые подходят как альтернативы или смежные решения, с кратким пояснением)
-
-Правила:
-- Используй только сайты из переданных проверенных списков.
-- В пунктах 5 и 7 перечисляй только проверенные точные конкуренты.
-- В пункте 8 чётко разделяй на "Отличные конкуренты (прямые)" и "Подходящие (косвенные/расширенные)". Для каждого сайта дай краткое пояснение, почему он подходит.
-- Если точных конкурентов меньше 5, укажи это. Если косвенных меньше 5, укажи это.
-- Не выдумывай дополнительные компании, ссылки, географию, запросы или факты, которых нет в исходных данных.
-- Отвечай коротко, конкретно и по делу.
+Сформируй итоговый ответ строго по структуре, описанной выше (пункты 1.1 – 1.9). Не добавляй лишнего. Используй только те данные, которые есть в предоставленных списках и профиле. Не выдумывай новых конкурентов. Если информации недостаточно – укажи это.
 """
-
 
 def call_mistral(messages: list[dict], *, use_tools: bool = False, temperature: float = 0.3, max_tokens: int = 4096) -> dict:
     global _api_key_index
@@ -712,28 +709,38 @@ def get_candidate_domains(domain: str, our_profile: dict, competitor_type: str, 
     excluded_domains = excluded_domains or set()
     candidates = []
 
-    # ---- Exa для поиска конкурентов ----
-    if EXA_API_KEY:
+    # Параллельный запуск Exa и Mistral
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = []
+        # Exa задача
+        if EXA_API_KEY:
+            if competitor_type == "direct":
+                futures.append(executor.submit(search_exa, f"similar to {domain}", 15))
+            elif competitor_type == "indirect":
+                futures.append(executor.submit(search_exa, f"companies in related niches to {domain}", 15))
+
+        # Mistral задача
         if competitor_type == "direct":
-            exa_urls = search_exa(f"similar to {domain}", num_results=15)
-            candidates.extend(exa_urls)
-        elif competitor_type == "indirect":
-            exa_urls = search_exa(f"companies in related niches to {domain}", num_results=15)
-            candidates.extend(exa_urls)
+            prompt = DIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
+        else:
+            prompt = INDIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
 
-    # ---- Mistral с tool calls ----
-    if competitor_type == "direct":
-        prompt = DIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
-    else:
-        prompt = INDIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=summarize_profile(our_profile))
+        def mistral_task():
+            content = complete_with_tools(
+                [{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=1800,
+            )
+            return extract_candidate_urls(content)
 
-    content = complete_with_tools(
-        [{"role": "user", "content": prompt}],
-        temperature=0.2,
-        max_tokens=1800,
-    )
-    urls = extract_candidate_urls(content)
-    candidates.extend(urls)
+        futures.append(executor.submit(mistral_task))
+
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                urls = future.result()
+                candidates.extend(urls)
+            except Exception as e:
+                st.warning(f"Ошибка при поиске кандидатов: {e}")
 
     candidates = dedupe_urls(candidates)
     candidates = exclude_domains(candidates, excluded_domains)
@@ -878,10 +885,6 @@ def build_final_report(
         temperature=0.25,
         max_tokens=3000,
     ).get("content", "")
-
-    report = replace_section(report, 5, build_section_5_direct(verified_direct))
-    report = replace_section(report, 7, build_section_7_direct(verified_direct))
-    report = replace_section(report, 8, build_section_8_competitors(verified_direct, verified_indirect))
     return report
 
 
@@ -966,58 +969,6 @@ def rerun_competitors_only(domain: str, our_profile: dict) -> tuple[list[dict], 
     return verified_direct[:10], verified_indirect[:10], rejected
 
 
-def replace_section(text: str, section_number: int, new_section: str) -> str:
-    pattern = re.compile(rf"(?ms)^({section_number}\..*?)(?=^\d+\.|\Z)")
-    match = pattern.search(text)
-    if not match:
-        return f"{text}\n\n{new_section}"
-    return text[: match.start()] + new_section.strip() + "\n\n" + text[match.end() :].lstrip()
-
-
-def build_section_5_direct(verified_direct: list[dict]) -> str:
-    lines = ["5. Точные конкуренты (коротко: живой? тематика? масштаб? релевантность?):"]
-    if not verified_direct:
-        lines.append("- Проверенных точных конкурентов не найдено.")
-        return "\n".join(lines)
-
-    for item in verified_direct[:10]:
-        shared = ", ".join(item.get("shared_keywords", [])[:4]) or "мало общих терминов"
-        lines.append(
-            f"- {item['url']} — живой, релевантность {item['score']}%, {item['scale_comment']}, совпадения: {shared}."
-        )
-    return "\n".join(lines)
-
-
-def build_section_7_direct(verified_direct: list[dict]) -> str:
-    lines = ["7. Точные конкуренты (ссылки):"]
-    if not verified_direct:
-        lines.append("- Проверенных ссылок нет")
-        return "\n".join(lines)
-    for item in verified_direct[:10]:
-        lines.append(f"- {item['url']}")
-    return "\n".join(lines)
-
-
-def build_section_8_competitors(verified_direct: list[dict], verified_indirect: list[dict]) -> str:
-    lines = ["8. Конкуренты:"]
-    
-    lines.append("   - Отличные конкуренты (прямые):")
-    if verified_direct:
-        for item in verified_direct[:10]:
-            lines.append(f"      * {item['url']} — {item['scale_comment']}, релевантность {item['score']}%, совпадения: {', '.join(item.get('shared_keywords', [])[:4]) or 'мало общих терминов'}.")
-    else:
-        lines.append("      * Проверенных точных конкурентов не найдено.")
-    
-    lines.append("   - Подходящие (косвенные/расширенные):")
-    if verified_indirect:
-        for item in verified_indirect[:10]:
-            lines.append(f"      * {item['url']} — {item['scale_comment']}, релевантность {item['score']}%, совпадения: {', '.join(item.get('shared_keywords', [])[:4]) or 'мало общих терминов'}.")
-    else:
-        lines.append("      * Проверенных косвенных конкурентов не найдено.")
-    
-    return "\n".join(lines)
-
-
 def render_best_competitors(verified_direct: list[dict], verified_indirect: list[dict], limit=10):
     combined = verified_direct + verified_indirect
     combined.sort(key=lambda x: x["score"], reverse=True)
@@ -1047,7 +998,7 @@ def render_best_competitors(verified_direct: list[dict], verified_indirect: list
 
 # ========== ИНТЕРФЕЙС STREAMLIT ==========
 
-domain = st.text_input("Введи домен сайта (например, zaryadiavto.ru):")
+domain = st.text_input("Введи домен сайта (например, interiermsk.hotht.ru):")
 
 if "result" not in st.session_state:
     st.session_state.result = ""
@@ -1089,11 +1040,7 @@ if st.session_state.result and st.button("Обновить список конк
         with st.spinner("Перепроверяю конкурентов..."):
             try:
                 verified_direct, verified_indirect, rejected = rerun_competitors_only(saved_domain, our_profile)
-                updated = replace_section(st.session_state.result, 5, build_section_5_direct(verified_direct))
-                updated = replace_section(updated, 7, build_section_7_direct(verified_direct))
-                updated = replace_section(updated, 8, build_section_8_competitors(verified_direct, verified_indirect))
-
-                st.session_state.result = updated
+                # Пересобираем отчёт без замены секций (просто обновляем переменные)
                 st.session_state.verified_direct_competitors = verified_direct
                 st.session_state.verified_indirect_competitors = verified_indirect
                 st.session_state.rejected_competitors = rejected
