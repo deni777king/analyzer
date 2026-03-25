@@ -15,13 +15,23 @@ st.set_page_config(page_title="Конкурентный Анализатор", l
 st.title("Конкурентный Анализатор")
 
 # ===== НАСТРОЙКА API-КЛЮЧЕЙ =====
-# Mistral
+# Mistral (основные)
 MISTRAL_API_KEYS = [
     "S7ZtbybPJ6eVtI6SXpLrWTxZg5ScQSPR",
     "RciSeumN9OBaOuhUNcQ0ynbjKSVkw6kF",
     "jMinLgK9DSNsMJ6gSQM7yATFNRfoOvxx",
     "hzCXFKU2QmiHcVN7nbuHWSDKCkqW29MJ",
 ]
+
+# Groq (резерв)
+GROQ_API_KEY = "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"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# Gemini (резерв)
+GEMINI_API_KEY = "AIzaSyCRhU1ahpgwh9xCRaFgIaII6FxxjYfbDh0"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
+GEMINI_MODEL = "gemini-2.0-flash-exp"
 
 # Exa
 EXA_API_KEYS = [
@@ -37,7 +47,7 @@ JINA_API_KEYS = [
 ]
 JINA_READER_URL = "https://r.jina.ai/"
 
-# Потокобезопасные счётчики round‑robin
+# Потокобезопасные счётчики для round-robin
 _mistral_lock = threading.Lock()
 _mistral_idx = 0
 
@@ -50,7 +60,7 @@ _jina_idx = 0
 def get_next_mistral_key():
     global _mistral_idx
     if not MISTRAL_API_KEYS:
-        raise RuntimeError("Нет ключей Mistral")
+        return None
     with _mistral_lock:
         key = MISTRAL_API_KEYS[_mistral_idx % len(MISTRAL_API_KEYS)]
         _mistral_idx += 1
@@ -74,9 +84,6 @@ def get_next_jina_key():
         _jina_idx += 1
         return key
 
-MISTRAL_MODEL = "mistral-small-latest"
-MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
-
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -84,13 +91,11 @@ REQUEST_HEADERS = {
     ),
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
-
 MARKETPLACE_BLOCKLIST = {
     "avito.ru", "www.avito.ru", "olx.ua", "www.olx.ua", "wildberries.ru", "www.wildberries.ru",
     "ozon.ru", "www.ozon.ru", "market.yandex.ru", "yandex.market", "tiu.ru", "www.tiu.ru",
     "prom.ua", "www.prom.ua", "aliexpress.com", "www.aliexpress.com", "satu.kz", "www.satu.kz",
 }
-
 STOPWORDS = {
     "и", "в", "во", "на", "по", "с", "со", "к", "ко", "у", "о", "об", "от", "до", "для",
     "из", "за", "под", "при", "это", "как", "что", "или", "а", "но", "мы", "вы", "они",
@@ -109,7 +114,7 @@ def fetch_site_profile(url_or_domain: str) -> dict:
     last_error = "Не удалось открыть сайт"
 
     for candidate in variants:
-        # Jina Reader (с ротацией ключей)
+        # Попробуем Jina Reader
         try:
             jina_url = JINA_READER_URL + candidate
             jina_headers = {}
@@ -423,10 +428,8 @@ def classify_competitor(comparison: dict) -> str | None:
     body_cosine = comparison["body_cosine"]
     header_overlap = comparison["header_overlap"]
 
-    # Точный конкурент: высокие требования + наличие общих слов
     if score >= 26 and shared_count >= 1 and (body_cosine >= 0.15 or header_overlap >= 0.12):
         return "direct"
-    # Косвенный конкурент: немного ниже, но тоже с общими словами
     if score >= 14 and shared_count >= 1 and (body_cosine >= 0.08 or header_overlap >= 0.07):
         return "indirect"
     return None
@@ -500,7 +503,7 @@ def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
     return result
 
 
-# ========== ИНТЕГРАЦИЯ EXA AI ==========
+# ========== EXA AI ==========
 def search_exa(query: str, num_results: int = 15) -> list[str]:
     api_key = get_next_exa_key()
     if not api_key:
@@ -524,7 +527,7 @@ def search_exa(query: str, num_results: int = 15) -> list[str]:
         return []
 
 
-# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С MISTRAL ==========
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С LLM ==========
 tools = [
     {
         "type": "function",
@@ -543,7 +546,7 @@ tools = [
     }
 ]
 
-# Промты (оставлены как в предыдущей версии, сокращены для экономии места)
+# Промты
 SITE_SUMMARY_PROMPT = """
 Ты аналитик сайтов. Ниже профиль нашего сайта:
 {site_summary}
@@ -591,34 +594,108 @@ FINAL_REPORT_PROMPT = """
 Не добавляй лишнего. Если информации недостаточно – укажи.
 """
 
+
 def call_mistral(messages, use_tools=False, temperature=0.3, max_tokens=4096):
     api_key = get_next_mistral_key()
+    if not api_key:
+        raise Exception("Нет доступных ключей Mistral")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
-        "model": MISTRAL_MODEL,
+        "model": "mistral-small-latest",
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
     if use_tools:
         payload["tools"] = tools
-    response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]
+    response = requests.post("https://api.mistral.ai/v1/chat/completions", json=payload, headers=headers, timeout=90)
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]
+    else:
+        raise Exception(f"Mistral ошибка {response.status_code}: {response.text}")
+
+
+def call_groq(messages, use_tools=False, temperature=0.3, max_tokens=4096):
+    if use_tools:
+        raise Exception("Groq не поддерживает функции (tools)")
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]
+    else:
+        raise Exception(f"Groq ошибка {response.status_code}: {response.text}")
+
+
+def call_gemini(messages, use_tools=False, temperature=0.3, max_tokens=4096):
+    # Преобразуем сообщения в формат Gemini
+    contents = []
+    for msg in messages:
+        role = "model" if msg["role"] == "assistant" else msg["role"]
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    if use_tools:
+        # Упрощённо: Gemini поддерживает function calling, но для краткости пропустим
+        # Если tools нужны, можно доработать, но для текущих задач (browse_page) Groq не подходит,
+        # а Gemini сможет, но адаптер надо дописать. Пока просто поднимем исключение,
+        # чтобы переключиться на Mistral (который tools поддерживает)
+        raise Exception("Gemini adapter does not support tools yet")
+
+    url = f"{GEMINI_API_URL}?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": contents,
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        },
+    }
+    response = requests.post(url, json=payload, timeout=90)
+    if response.status_code == 200:
+        data = response.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return {"role": "assistant", "content": text}
+    else:
+        raise Exception(f"Gemini ошибка {response.status_code}: {response.text}")
+
+
+def call_llm_with_fallback(messages, use_tools=False, temperature=0.3, max_tokens=4096):
+    # Порядок: Mistral (поддерживает tools) -> Gemini (может, но пока пропустим) -> Groq (без tools)
+    providers = [
+        ("Mistral", call_mistral, True),
+        ("Gemini", call_gemini, True),   # tools не реализованы, но если use_tools=False, сработает
+        ("Groq", call_groq, False),
+    ]
+    last_error = None
+    for name, adapter, supports_tools in providers:
+        if use_tools and not supports_tools:
+            continue
+        try:
+            return adapter(messages, use_tools=use_tools, temperature=temperature, max_tokens=max_tokens)
+        except Exception as e:
+            last_error = f"{name}: {e}"
+            continue
+    raise RuntimeError(f"Все провайдеры не смогли обработать запрос. Последняя ошибка: {last_error}")
 
 
 def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
     conversation = list(messages)
     for _ in range(12):
         try:
-            msg = call_mistral(conversation, use_tools=True, temperature=temperature, max_tokens=max_tokens)
+            msg = call_llm_with_fallback(conversation, use_tools=True, temperature=temperature, max_tokens=max_tokens)
         except Exception as e:
-            st.warning(f"Mistral ошибка: {e}. Пробуем другой ключ...")
-            continue
+            st.warning(f"Ошибка LLM при вызове с tools: {e}. Пробуем без tools...")
+            raise
+
         conversation.append(msg)
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
             return msg.get("content", "")
+
         def process(tc):
             func = tc.get("function", {})
             if func.get("name") != "browse_page":
@@ -630,17 +707,22 @@ def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
             except Exception as e:
                 content = json.dumps({"error": str(e)}, ensure_ascii=False)
             return {"role": "tool", "tool_call_id": tc["id"], "name": "browse_page", "content": content}
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
             results = list(ex.map(process, tool_calls))
+
         for r in results:
             if r:
                 conversation.append(r)
+
     return "Не удалось завершить обработку tool calls."
 
 
+# ========== ОСНОВНЫЕ ФУНКЦИИ АНАЛИЗА ==========
 def get_site_outline(our_profile):
     prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
-    return call_mistral([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1200).get("content", "")
+    response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1200)
+    return response.get("content", "")
 
 
 def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
@@ -757,7 +839,8 @@ def build_final_report(our_profile, site_outline, verified_direct, verified_indi
         verified_indirect_json=vi_json,
         rejected_json=rj_json,
     )
-    return call_mistral([{"role": "user", "content": prompt}], use_tools=False, temperature=0.25, max_tokens=3000).get("content", "")
+    response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.25, max_tokens=3000)
+    return response.get("content", "")
 
 
 def build_validation_rows(verified_direct, verified_indirect):
@@ -861,8 +944,8 @@ if "last_domain" not in st.session_state:
 if st.button("Провести анализ"):
     if not domain:
         st.warning("Введи домен")
-    elif not MISTRAL_API_KEYS:
-        st.warning("Нет ключей Mistral")
+    elif not MISTRAL_API_KEYS and not GROQ_API_KEY and not GEMINI_API_KEY:
+        st.warning("Нет ни одного API-ключа для LLM.")
     else:
         with st.spinner("Анализирую..."):
             try:
