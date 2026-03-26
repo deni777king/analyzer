@@ -54,9 +54,9 @@ GROQ_KEYS_ALL = [
     "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",
     "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",
 ]
-GROQ_KEYS_LINE1 = [GROQ_KEYS_ALL[0]]                     # 1 ключ
-GROQ_KEYS_LINE2 = [GROQ_KEYS_ALL[1], GROQ_KEYS_ALL[2]]   # 2 ключа
-GROQ_KEYS_LINE3 = [GROQ_KEYS_ALL[3], GROQ_KEYS_ALL[4], GROQ_KEYS_ALL[5]]  # 3 ключа
+GROQ_KEYS_LINE1 = [GROQ_KEYS_ALL[0]]
+GROQ_KEYS_LINE2 = [GROQ_KEYS_ALL[1], GROQ_KEYS_ALL[2]]
+GROQ_KEYS_LINE3 = [GROQ_KEYS_ALL[3], GROQ_KEYS_ALL[4], GROQ_KEYS_ALL[5]]
 
 # --- Gemini (5 ключей) ---
 GEMINI_KEYS_ALL = [
@@ -66,9 +66,9 @@ GEMINI_KEYS_ALL = [
     "AIzaSyAJP67w_9Z5xmSDVwcE_2L5Rz-v4ktRJSo",
     "AIzaSyDdjbQ47TUjsbUigDgctHUnSJ-BrXvvvkQ",
 ]
-GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]                     # 1 ключ
-GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]] # 2 ключа
-GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4]] # 2 ключа (т.к. у нас 5 ключей, третий используем 2 ключа)
+GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]
+GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]]
+GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4]]
 
 # --- Jina для 3 Аудита (один ключ) ---
 JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
@@ -419,7 +419,6 @@ def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
     return result
 
 # ========== 4. ФУНКЦИИ ДЛЯ ЗАГРУЗКИ ПРОФИЛЕЙ САЙТОВ ==========
-# Обычный профиль (для конкурентного анализа) – использует стандартный парсинг (без Jina)
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
     variants = build_url_variants(url_or_domain)
@@ -776,8 +775,62 @@ def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains
             return []
     return exclude_domains(dedupe_urls(exa_urls), excluded)
 
-# ========== 7. ПРОВЕРКА КОНКУРЕНТОВ ==========
-def verify_competitors(our_profile, candidate_urls, target_type):
+# ========== 7. ПОИСК КОНКУРЕНТОВ ТОЛЬКО ЧЕРЕЗ LLM (ДЛЯ ПЕРЕПРОВЕРКИ) ==========
+def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_domains=None):
+    excluded = excluded_domains or set()
+    # Формируем промт для LLM
+    site_desc = summarize_profile(our_profile)
+    if competitor_type == "direct":
+        prompt = f"""
+Ты ищешь прямых конкурентов для сайта {domain}. Профиль нашего сайта:
+{site_desc}
+
+Найди минимум 10 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан).
+Исключи маркетплейсы, доски объявлений, государственные учреждения.
+Верни только список корневых URL, по одному на строку, без пояснений.
+"""
+    else:
+        prompt = f"""
+Ты ищешь косвенных конкурентов для сайта {domain}. Профиль нашего сайта:
+{site_desc}
+
+Найди минимум 10 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории.
+Исключи маркетплейсы, доски объявлений.
+Верни только список корневых URL, по одному на строку, без пояснений.
+"""
+    try:
+        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1800)
+        urls = extract_candidate_urls(response.get("content", ""))
+    except Exception as e:
+        st.warning(f"Ошибка LLM при поиске кандидатов: {e}")
+        urls = []
+    return exclude_domains(dedupe_urls(urls), excluded)
+
+# ========== 8. ИЗВЛЕЧЕНИЕ РЕГИОНА ==========
+@st.cache_data(ttl=3600)
+def extract_region(profile: dict) -> str:
+    """Извлекает регион (город/страна) из профиля сайта с помощью LLM."""
+    prompt = f"""
+Профиль сайта:
+{summarize_profile(profile)}
+
+Определи, в каком городе, регионе или стране работает этот сайт. Если сайт работает по всей стране, напиши "Россия" (или соответствующая страна).
+Если регион не указан явно, сделай предположение на основе контактов, текстов, упоминаний.
+Верни только название региона (например: "Москва", "Россия", "Казахстан", "Санкт-Петербург").
+"""
+    try:
+        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0, max_tokens=50)
+        region = response.get("content", "").strip()
+        return region
+    except Exception as e:
+        st.warning(f"Ошибка определения региона: {e}")
+        return "неизвестно"
+
+# ========== 9. ПРОВЕРКА КОНКУРЕНТОВ (С УЧЁТОМ РЕГИОНА) ==========
+def verify_competitors(our_profile, candidate_urls, target_type, our_region=None):
+    if our_region is None:
+        our_region = extract_region(our_profile)
+
     verified = []
     rejected = []
     seen = set()
@@ -800,6 +853,15 @@ def verify_competitors(our_profile, candidate_urls, target_type):
         if not candidate_profile.get("ok"):
             return ("reject", {"url": url, "reason": f"Недоступен: {candidate_profile.get('issue', 'ошибка')}", "type": target_type})
 
+        # Проверка региона
+        candidate_region = extract_region(candidate_profile)
+        # Если регион нашего сайта не "Россия" (или не "по всей стране"), и регионы не совпадают, отклоняем
+        if our_region.lower() not in ["россия", "рф", "вся россия", "по всей стране"] and \
+           candidate_region.lower() not in ["россия", "рф", "вся россия", "по всей стране"] and \
+           our_region.lower() != candidate_region.lower():
+            return ("reject", {"url": candidate_profile["final_url"], "reason": f"Несовпадение региона: наш ({our_region}) vs кандидат ({candidate_region})", "type": target_type})
+
+        # Сравнение профилей
         our_keywords_set = set(our_profile.get("keywords", []))
         candidate_keywords_set = set(candidate_profile.get("keywords", []))
         if not (our_keywords_set & candidate_keywords_set):
@@ -865,7 +927,7 @@ def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
         st.warning(f"Ошибка LLM при проверке релевантности: {e}")
         return True
 
-# ========== 8. ОСНОВНЫЕ ФУНКЦИИ АНАЛИЗА ==========
+# ========== 10. ОСНОВНЫЕ ФУНКЦИИ АНАЛИЗА ==========
 def get_site_outline(our_profile):
     prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
     response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1200)
@@ -923,24 +985,27 @@ def run_full_analysis(domain):
     return report, our, dir_ver, ind_ver, rej
 
 def rerun_competitors_only(domain, our_profile):
-    # Принудительно переключаем на линию 3 (только Groq/Gemini)
+    # При перепроверке используем LLM для поиска кандидатов (без Exa)
+    # Принудительно переключаем линию на 3 (только Groq/Gemini)
     global current_line
     saved_line = current_line
     current_line = 3
     try:
-        dir_cand = get_candidate_domains(domain, our_profile, "direct")
-        ind_cand = get_candidate_domains(domain, our_profile, "indirect")
-        dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct")
+        # Извлекаем регион нашего сайта (один раз)
+        our_region = extract_region(our_profile)
+        dir_cand = get_candidate_domains_llm(domain, our_profile, "direct")
+        ind_cand = get_candidate_domains_llm(domain, our_profile, "indirect")
+        dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct", our_region)
         dir_doms = {d["domain"] for d in dir_ver}
         ind_cand = exclude_domains(ind_cand, dir_doms)
-        ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect")
+        ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect", our_region)
         rej = dir_rej + ind_rej
         ind_ver, rej = ensure_min_indirect(domain, our_profile, dir_ver, ind_ver, rej)
         return dir_ver[:10], ind_ver[:10], rej
     finally:
         current_line = saved_line
 
-# ========== 9. ИМИДЖЕВЫЙ АНАЛИЗ ==========
+# ========== 11. ИМИДЖЕВЫЙ АНАЛИЗ ==========
 IMIDGE_PROMPT = """
 Ты аналитик сайтов. Проверь сайт по URL и определи, относится ли он к "имиджевым клиентам".
 
@@ -970,7 +1035,7 @@ def analyze_imidj(url: str) -> str:
     response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=300)
     return response.get("content", "Ошибка анализа")
 
-# ========== 10. ФУНКЦИЯ 3 АУДИТА ==========
+# ========== 12. ФУНКЦИЯ 3 АУДИТА ==========
 AUDIT_GROQ_KEYS = [GROQ_KEYS_ALL[0], GROQ_KEYS_ALL[1]]
 AUDIT_GEMINI_KEYS = [GEMINI_KEYS_ALL[0], GEMINI_KEYS_ALL[1]]
 audit_groq_rr = RoundRobin(AUDIT_GROQ_KEYS)
@@ -1093,9 +1158,7 @@ URL: {url}
     response = audit_call_with_fallback([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=1500)
     return response.get("content", "Ошибка генерации аудита")
 
-# ========== 11. ИНТЕРФЕЙС STREAMLIT ==========
-
-# Вспомогательные функции отображения
+# ========== 13. ИНТЕРФЕЙС STREAMLIT ==========
 def build_validation_rows(verified_direct, verified_indirect):
     all_ver = verified_direct + verified_indirect
     all_ver.sort(key=lambda x: x["score"], reverse=True)
@@ -1214,7 +1277,11 @@ with col2:
                 st.info("🔍 Начинаем перепроверку...")
             with st.spinner("Перепроверяю..."):
                 try:
-                    dir_ver, ind_ver, rej = rerun_competitors_only(domain, st.session_state.our_profile or fetch_site_profile(domain))
+                    # Если профиль нашего сайта ещё не загружен, загружаем
+                    our_profile = st.session_state.our_profile
+                    if not our_profile:
+                        our_profile = fetch_site_profile(domain)
+                    dir_ver, ind_ver, rej = rerun_competitors_only(domain, our_profile)
                     st.session_state.verified_direct_competitors = dir_ver
                     st.session_state.verified_indirect_competitors = ind_ver
                     st.session_state.rejected_competitors = rej
