@@ -70,7 +70,7 @@ GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]
 GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]]
 GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4]]
 
-# --- Jina для 3 Аудита ---
+# --- Jina для 3 Аудита (один ключ) ---
 JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
 JINA_READER_URL = "https://r.jina.ai/"
 
@@ -96,6 +96,7 @@ LINE_CONFIG = {
     }
 }
 
+# Счётчики для round-robin внутри линии
 class RoundRobin:
     def __init__(self, keys):
         self.keys = keys
@@ -109,6 +110,7 @@ class RoundRobin:
             self.idx += 1
             return k
 
+# Состояние линий (активная линия, round‑robin объекты)
 current_line = 1
 line_rr = {
     1: {"groq": RoundRobin(LINE_CONFIG[1]["groq"]),
@@ -169,11 +171,594 @@ if "current_user_id" not in st.session_state:
 user_id = st.session_state.current_user_id
 queue = st.session_state.user_queue
 
-# ========== 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (парсинг, сравнение) ==========
-# (все функции до fetch_site_profile включительно — без изменений, я их опускаю для краткости,
-#  но в финальном коде они должны быть полностью. Ниже приведены только изменённые и новые части.)
+# ========== 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
-# ========== 4. ПОИСК КАНДИДАТОВ (С ГАРАНТИЕЙ 5+ URL) ==========
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+}
+MARKETPLACE_BLOCKLIST = {
+    "avito.ru", "www.avito.ru", "olx.ua", "www.olx.ua", "wildberries.ru", "www.wildberries.ru",
+    "ozon.ru", "www.ozon.ru", "market.yandex.ru", "yandex.market", "tiu.ru", "www.tiu.ru",
+    "prom.ua", "www.prom.ua", "aliexpress.com", "www.aliexpress.com", "satu.kz", "www.satu.kz",
+}
+STOPWORDS = {
+    "и", "в", "во", "на", "по", "с", "со", "к", "ко", "у", "о", "об", "от", "до", "для",
+    "из", "за", "под", "при", "это", "как", "что", "или", "а", "но", "мы", "вы", "они",
+    "он", "она", "оно", "их", "его", "ее", "наш", "ваш", "ваши", "наши", "вас", "нам",
+    "не", "да", "нет", "же", "ли", "то", "так", "если", "уже", "только", "ещё", "еще",
+    "the", "and", "for", "with", "this", "that", "from", "you", "your", "our", "about",
+    "home", "main", "index", "официальный", "главная", "меню", "catalog", "shop", "company",
+    "контакты", "contact", "contacts", "ru", "com", "org", "net", "www", "http", "https",
+}
+
+def build_url_variants(value: str) -> list[str]:
+    raw = value.strip()
+    if not raw:
+        return []
+    raw = re.sub(r"^[\-\s]+", "", raw)
+    raw = re.sub(r"[\s/]+$", "", raw)
+    raw = raw.replace("http://", "").replace("https://", "")
+    raw = raw.replace("www.", "")
+    domain = raw.split("/", 1)[0]
+    variants = [
+        f"https://{domain}",
+        f"https://www.{domain}",
+        f"http://{domain}",
+        f"http://www.{domain}",
+    ]
+    return list(dict.fromkeys(variants))
+
+def normalize_root_url(value: str) -> str:
+    parsed = urlparse(value if value.startswith(("http://", "https://")) else f"https://{value}")
+    netloc = parsed.netloc or parsed.path
+    netloc = netloc.lower().strip()
+    netloc = netloc.replace("http://", "").replace("https://", "")
+    netloc = netloc.rstrip("/")
+    return f"https://{netloc}"
+
+def get_domain_key(value: str) -> str:
+    parsed = urlparse(value if value.startswith(("http://", "https://")) else f"https://{value}")
+    netloc = (parsed.netloc or parsed.path).lower().strip()
+    netloc = netloc.replace("http://", "").replace("https://", "")
+    netloc = netloc.rstrip("/")
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    return netloc
+
+def clean_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", text or "")
+    return text.strip()
+
+def count_internal_links(soup: BeautifulSoup, domain: str) -> int:
+    count = 0
+    for link in soup.find_all("a", href=True):
+        href = link.get("href", "").strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        href_domain = get_domain_key(href) if href.startswith(("http://", "https://")) else domain
+        if href_domain == domain:
+            count += 1
+    return count
+
+def tokenize(text: str) -> list[str]:
+    prepared = clean_text(text.lower().replace("ё", "е"))
+    tokens = re.findall(r"[a-zа-я][a-zа-я0-9\-]{1,}", prepared)
+    result = []
+    for token in tokens:
+        if token in STOPWORDS:
+            continue
+        if token.isdigit():
+            continue
+        if len(token) <= 2:
+            continue
+        result.append(token)
+    return result
+
+def jaccard_similarity(first: set[str], second: set[str]) -> float:
+    if not first or not second:
+        return 0.0
+    union = first | second
+    if not union:
+        return 0.0
+    return len(first & second) / len(union)
+
+def cosine_similarity(counter_a: Counter, counter_b: Counter) -> float:
+    if not counter_a or not counter_b:
+        return 0.0
+    shared = set(counter_a) & set(counter_b)
+    numerator = sum(counter_a[token] * counter_b[token] for token in shared)
+    norm_a = math.sqrt(sum(v * v for v in counter_a.values()))
+    norm_b = math.sqrt(sum(v * v for v in counter_b.values()))
+    if not norm_a or not norm_b:
+        return 0.0
+    return numerator / (norm_a * norm_b)
+
+def compare_profiles(our_profile: dict, candidate_profile: dict) -> dict:
+    our_counter = Counter(our_profile.get("token_counter", {}))
+    candidate_counter = Counter(candidate_profile.get("token_counter", {}))
+
+    our_keywords = our_profile.get("keywords", [])
+    candidate_keywords = candidate_profile.get("keywords", [])
+    shared_keywords = [kw for kw in our_keywords if kw in candidate_keywords][:10]
+
+    our_head = set(tokenize(" ".join([
+        our_profile.get("title", ""),
+        our_profile.get("description", ""),
+        " ".join(our_profile.get("headings", [])),
+    ])))
+    candidate_head = set(tokenize(" ".join([
+        candidate_profile.get("title", ""),
+        candidate_profile.get("description", ""),
+        " ".join(candidate_profile.get("headings", [])),
+    ])))
+
+    body_cosine = cosine_similarity(our_counter, candidate_counter)
+    keyword_overlap = 0.0
+    if our_keywords and candidate_keywords:
+        keyword_overlap = len(set(shared_keywords)) / max(1, min(len(our_keywords), len(candidate_keywords)))
+    header_overlap = jaccard_similarity(our_head, candidate_head)
+
+    our_text_len = max(our_profile.get("text_length", 0), 1)
+    cand_text_len = max(candidate_profile.get("text_length", 0), 1)
+    text_ratio = min(our_text_len, cand_text_len) / max(our_text_len, cand_text_len)
+
+    our_links = max(our_profile.get("internal_links", 0), 1)
+    cand_links = max(candidate_profile.get("internal_links", 0), 1)
+    link_ratio = min(our_links, cand_links) / max(our_links, cand_links)
+    scale_score = 0.6 * text_ratio + 0.4 * link_ratio
+
+    thematic_score = 0.55 * body_cosine + 0.30 * keyword_overlap + 0.15 * header_overlap
+    final_score = round(((0.8 * thematic_score) + (0.2 * scale_score)) * 100, 1)
+
+    relevance = "низкая"
+    if final_score >= 40:
+        relevance = "высокая"
+    elif final_score >= 25:
+        relevance = "средняя"
+
+    scale_comment = "похожий масштаб"
+    if scale_score < 0.25:
+        scale_comment = "масштаб заметно отличается"
+    elif scale_score < 0.45:
+        scale_comment = "масштаб отличается"
+
+    reason = (
+        f"Совпавшие ключи: {', '.join(shared_keywords[:6])}."
+        if shared_keywords
+        else "Мало совпадающих тематических терминов."
+    )
+
+    return {
+        "score": final_score,
+        "relevance": relevance,
+        "body_cosine": round(body_cosine, 3),
+        "keyword_overlap": round(keyword_overlap, 3),
+        "header_overlap": round(header_overlap, 3),
+        "scale_score": round(scale_score, 3),
+        "scale_comment": scale_comment,
+        "shared_keywords": shared_keywords,
+        "reason": reason,
+    }
+
+def classify_competitor(comparison: dict) -> str | None:
+    score = comparison["score"]
+    shared_count = len(comparison["shared_keywords"])
+    body_cosine = comparison["body_cosine"]
+    header_overlap = comparison["header_overlap"]
+    if score >= 30 and shared_count >= 2 and (body_cosine >= 0.15 or header_overlap >= 0.12):
+        return "direct"
+    if score >= 18 and shared_count >= 1 and (body_cosine >= 0.08 or header_overlap >= 0.07):
+        return "indirect"
+    return None
+
+def is_blocked_domain(domain: str) -> bool:
+    domain = get_domain_key(domain)
+    if domain in MARKETPLACE_BLOCKLIST:
+        return True
+    return any(domain.endswith(f".{item}") for item in MARKETPLACE_BLOCKLIST)
+
+def summarize_profile(profile: dict) -> str:
+    headings = "; ".join(profile.get("headings", [])[:4]) or "нет данных"
+    keywords = ", ".join(profile.get("keywords", [])[:12]) or "нет данных"
+    snippet = profile.get("snippet", "")[:1200] or "нет данных"
+    return (
+        f"Домен: {profile.get('domain', '')}\n"
+        f"URL: {profile.get('final_url', '')}\n"
+        f"Title: {profile.get('title', '') or 'нет данных'}\n"
+        f"Description: {profile.get('description', '') or 'нет данных'}\n"
+        f"Headings: {headings}\n"
+        f"Keywords: {keywords}\n"
+        f"Фрагмент текста: {snippet}"
+    )
+
+def extract_candidate_urls(text: str) -> list[str]:
+    if not text:
+        return []
+    pattern = re.compile(
+        r"(?:https?://)?(?:www\.)?[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+(?:/[a-zA-Z0-9_./?=&%-]*)?"
+    )
+    candidates = []
+    seen = set()
+    for raw in pattern.findall(text):
+        url = normalize_root_url(raw)
+        domain = get_domain_key(url)
+        if "." not in domain:
+            continue
+        if domain in seen:
+            continue
+        seen.add(domain)
+        candidates.append(url)
+    return candidates
+
+def dedupe_urls(urls: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for raw in urls:
+        url = normalize_root_url(raw)
+        domain = get_domain_key(url)
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        result.append(url)
+    return result
+
+def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
+    result = []
+    seen = set()
+    for raw in urls:
+        url = normalize_root_url(raw)
+        domain = get_domain_key(url)
+        if not domain or domain in excluded_domains or domain in seen:
+            continue
+        seen.add(domain)
+        result.append(url)
+    return result
+
+# ========== 4. ФУНКЦИИ ДЛЯ ЗАГРУЗКИ ПРОФИЛЕЙ САЙТОВ ==========
+@st.cache_data(show_spinner=False, ttl=3600)
+def fetch_site_profile(url_or_domain: str) -> dict:
+    variants = build_url_variants(url_or_domain)
+    last_error = "Не удалось открыть сайт"
+
+    for candidate in variants:
+        try:
+            response = requests.get(candidate, headers=REQUEST_HEADERS, timeout=15, allow_redirects=True)
+            status_code = response.status_code
+            content_type = response.headers.get("Content-Type", "")
+
+            if status_code >= 400:
+                last_error = f"HTTP {status_code}"
+                continue
+
+            if "html" not in content_type and "text" not in content_type:
+                last_error = f"Неподдерживаемый Content-Type: {content_type}"
+                continue
+
+            html = response.text
+            soup = BeautifulSoup(html, "html.parser")
+            for tag in soup(["script", "style", "noscript", "svg", "iframe"]):
+                tag.decompose()
+
+            title = clean_text(soup.title.get_text(" ", strip=True) if soup.title else "")
+            description = clean_text(
+                (
+                    soup.find("meta", attrs={"name": "description"})
+                    or soup.find("meta", attrs={"property": "og:description"})
+                    or {}
+                ).get("content", "")
+            )
+            headings = [
+                clean_text(tag.get_text(" ", strip=True))
+                for tag in soup.find_all(["h1", "h2"], limit=8)
+                if clean_text(tag.get_text(" ", strip=True))
+            ]
+            text = clean_text(soup.get_text(" ", strip=True))
+            text = text[:15000]
+            final_url = response.url
+            final_domain = get_domain_key(final_url)
+            internal_links = count_internal_links(soup, final_domain)
+
+            if len(text) < 180:
+                last_error = "Сайт почти пустой"
+                continue
+
+            weighted_text = " ".join(
+                [title] * 6 + [description] * 5 + headings * 3 + [text]
+            )
+            token_counter = Counter(tokenize(weighted_text))
+            keywords = [token for token, _ in token_counter.most_common(25)]
+
+            return {
+                "ok": True,
+                "live": True,
+                "requested_url": candidate,
+                "final_url": normalize_root_url(final_url),
+                "domain": final_domain,
+                "title": title,
+                "description": description,
+                "headings": headings[:5],
+                "text": text,
+                "snippet": text[:1500],
+                "status_code": status_code,
+                "internal_links": internal_links,
+                "text_length": len(text),
+                "keywords": keywords,
+                "token_counter": dict(token_counter),
+                "issue": "",
+            }
+        except Exception as exc:
+            last_error = str(exc)
+
+    return {
+        "ok": False,
+        "live": False,
+        "requested_url": normalize_root_url(url_or_domain),
+        "final_url": normalize_root_url(url_or_domain),
+        "domain": get_domain_key(url_or_domain),
+        "title": "",
+        "description": "",
+        "headings": [],
+        "text": "",
+        "snippet": "",
+        "status_code": None,
+        "internal_links": 0,
+        "text_length": 0,
+        "keywords": [],
+        "token_counter": {},
+        "issue": last_error,
+    }
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def browse_page(url: str) -> str:
+    profile = fetch_site_profile(url)
+    payload = {
+        "live": profile["live"],
+        "url": profile["final_url"],
+        "domain": profile["domain"],
+        "title": profile["title"],
+        "description": profile["description"],
+        "headings": profile["headings"],
+        "keywords": profile["keywords"][:12],
+        "snippet": profile["snippet"],
+        "issue": profile["issue"],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+# ========== 5. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM ==========
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "browse_page",
+            "description": (
+                "Проверить сайт по URL и вернуть краткий профиль страницы: живая ли она, тема, заголовок, "
+                "описание, ключевые слова и краткий фрагмент текста."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"],
+            },
+        },
+    }
+]
+
+# Промты
+SITE_SUMMARY_PROMPT = """
+Ты аналитик сайтов. Ниже профиль нашего сайта:
+{site_summary}
+Проанализируй сайт и дай краткую оценку по пунктам:
+1. Коммерческий или некоммерческий? (если есть противоречия, укажи)
+2. Страна, регион/город
+3. По всей стране или локально?
+4. Топ-10 ключевых слов (только коммерческие, без региона, приоритет средне- и низкочастотным)
+6. Мессенджеры и площадки для рекламы
+Отвечай кратко, строго по структуре.
+"""
+
+DIRECT_CANDIDATE_PROMPT = """
+Ты ищешь кандидатов в ТОЧНЫЕ (прямые) конкуренты для сайта {domain}.
+Профиль нашего сайта: {site_summary}
+Правила: используй browse_page для каждого кандидата, исключай маркетплейсы, стремись к минимум 5. Верни только список корневых URL.
+"""
+
+INDIRECT_CANDIDATE_PROMPT = """
+Ты ищешь кандидатов в КОСВЕННЫЕ конкуренты для сайта {domain}.
+Профиль нашего сайта: {site_summary}
+Правила: используй browse_page, исключай прямых конкурентов и маркетплейсы, стремись к минимум 5. Верни только список корневых URL.
+"""
+
+FINAL_REPORT_PROMPT = """
+Ты аналитик сайтов. Используй только данные ниже и не выдумывай новые сайты.
+
+Профиль нашего сайта: {site_summary}
+Черновик анализа: {site_outline}
+Проверенные точные конкуренты: {verified_direct_json}
+Проверенные косвенные конкуренты: {verified_indirect_json}
+Отклонённые кандидаты: {rejected_json}
+
+Сформируй итоговый ответ строго по структуре:
+1.1 Страна, регион/город
+1.2 Работает ли по всей стране или локально
+1.3 Топ-10 точных запросов в месяц (только коммерческие, низкочастотные, узконаправленные, исключая информационные и общие фразы)
+1.4 Самые ближайшие прямые конкуренты (с обоснованием)
+1.5 Мессенджеры для привлечения клиентов (в %) – на основе анализа конкурентов и региона, а не только данных сайта
+1.6 Площадки для рекламы (в %) – релевантные тематике (например, Яндекс.Маркет, Avito, Profi.ru и т.п.)
+1.7 Сайты конкурентов (ссылки) – топ-10
+1.8 Коммерческий или некоммерческий?
+1.9 Противоречия / отсутствие данных
+
+Не добавляй лишнего. Если информации недостаточно – укажи. Ответ оформляй в виде списка с явными номерами пунктов.
+"""
+
+MESSENGER_RECOMMEND_PROMPT = """
+Ты аналитик по маркетингу. На основе данных о сайте и его конкурентах определи, какие мессенджеры и площадки лучше всего подойдут для привлечения клиентов.
+
+Данные о нашем сайте:
+{our_summary}
+
+Данные о конкурентах (до 10 сайтов):
+{competitors_summary}
+
+Регион работы: {region}
+
+Проанализируй:
+- Какие мессенджеры популярны в этом регионе (Telegram, WhatsApp, Viber и др.)
+- Какие площадки соответствуют тематике сайта (например, для товаров – Яндекс.Маркет, Ozon, Wildberries; для услуг – Avito, Profi.ru, YouDo; для b2b – партнёрские сети и т.д.)
+- Учитывай, что в РФ некоторые мессенджеры могут быть заблокированы.
+
+Верни ответ строго в формате:
+Мессенджеры (с процентами):
+- Название: %
+- ...
+Площадки (с процентами):
+- Название: %
+- ...
+"""
+
+# Адаптеры для LLM
+MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
+
+def call_mistral(messages, use_tools=False, temperature=0.3, max_tokens=4096):
+    keys = get_mistral_keys()
+    if not keys:
+        raise Exception("Нет доступных ключей Mistral в текущей линии")
+    for api_key in keys:
+        try:
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            payload = {
+                "model": "mistral-small-latest",
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if use_tools:
+                payload["tools"] = tools
+            response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]
+            elif response.status_code == 429:
+                raise Exception("Rate limit")
+            else:
+                continue
+        except Exception as e:
+            continue
+    raise Exception("Все ключи Mistral в текущей линии не сработали")
+
+def call_groq(messages, temperature=0.3, max_tokens=4096):
+    rr = line_rr[current_line]["groq"]
+    api_key = rr.get()
+    if not api_key:
+        raise Exception("Нет доступных ключей Groq в текущей линии")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]
+    elif response.status_code == 429:
+        raise Exception("Rate limit")
+    else:
+        raise Exception(f"Groq ошибка {response.status_code}")
+
+def call_gemini(messages, temperature=0.3, max_tokens=4096):
+    rr = line_rr[current_line]["gemini"]
+    api_key = rr.get()
+    if not api_key:
+        raise Exception("Нет доступных ключей Gemini в текущей линии")
+    contents = []
+    for msg in messages:
+        role = "model" if msg["role"] == "assistant" else msg["role"]
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+    url = f"{GEMINI_API_URL}?key={api_key}"
+    payload = {
+        "contents": contents,
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        },
+    }
+    response = requests.post(url, json=payload, timeout=90)
+    if response.status_code == 200:
+        data = response.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return {"role": "assistant", "content": text}
+    elif response.status_code == 429:
+        raise Exception("Rate limit")
+    else:
+        raise Exception(f"Gemini ошибка {response.status_code}")
+
+def call_llm_with_fallback(messages, use_tools=False, temperature=0.3, max_tokens=4096):
+    if use_tools:
+        try:
+            return call_mistral(messages, use_tools=True, temperature=temperature, max_tokens=max_tokens)
+        except Exception as e:
+            if "Rate limit" in str(e):
+                if switch_line():
+                    return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
+                else:
+                    raise
+            raise
+    else:
+        providers = [
+            ("Mistral", call_mistral),
+            ("Gemini", call_gemini),
+            ("Groq", call_groq),
+        ]
+        for name, func in providers:
+            try:
+                return func(messages, temperature=temperature, max_tokens=max_tokens)
+            except Exception as e:
+                if "Rate limit" in str(e) or "429" in str(e):
+                    if switch_line():
+                        return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
+                    else:
+                        continue
+                continue
+        raise Exception("Все провайдеры не смогли обработать запрос")
+
+def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
+    conversation = list(messages)
+    max_rounds = 12
+    for _ in range(max_rounds):
+        try:
+            msg = call_llm_with_fallback(conversation, use_tools=True, temperature=temperature, max_tokens=max_tokens)
+        except Exception as e:
+            st.error(f"Ошибка вызова LLM с tools: {e}")
+            raise
+        conversation.append(msg)
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            return msg.get("content", "")
+        def process(tc):
+            func = tc.get("function", {})
+            if func.get("name") != "browse_page":
+                return None
+            try:
+                args = json.loads(func.get("arguments", "{}"))
+                url = args.get("url", "")
+                content = browse_page(url) if url else json.dumps({"error": "Пустой URL"}, ensure_ascii=False)
+            except Exception as e:
+                content = json.dumps({"error": str(e)}, ensure_ascii=False)
+            return {"role": "tool", "tool_call_id": tc["id"], "name": "browse_page", "content": content}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            results = list(ex.map(process, tool_calls))
+        for r in results:
+            if r:
+                conversation.append(r)
+    return "Не удалось завершить обработку tool calls."
+
+# ========== 6. ПОИСК КОНКУРЕНТОВ ==========
 def search_exa(query: str, num_results: int = 15) -> list[str]:
     keys = get_exa_keys()
     if not keys:
@@ -201,195 +786,47 @@ def search_exa(query: str, num_results: int = 15) -> list[str]:
 
 def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
-    for attempt in range(2):  # две попытки с разными запросами
-        if competitor_type == "direct":
-            query = f"similar to {domain}"
-            exa_urls = search_exa(query, num_results=30)
+    if competitor_type == "direct":
+        query = f"similar to {domain}"
+    else:
+        query = f"companies in related niches to {domain}"
+    try:
+        exa_urls = search_exa(query, num_results=20)
+    except Exception as e:
+        if switch_line():
+            return get_candidate_domains(domain, our_profile, competitor_type, excluded_domains)
         else:
-            query = f"companies in related niches to {domain}"
-            exa_urls = search_exa(query, num_results=30)
-        filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
-        if len(filtered) >= 5:
-            return filtered[:15]
-        # Вторая попытка – более широкий запрос
-        if attempt == 0:
-            query = f"{domain} competitors" if competitor_type == "direct" else f"{domain} similar businesses"
-            exa_urls = search_exa(query, num_results=30)
-            filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
-            if len(filtered) >= 5:
-                return filtered[:15]
-    # Если всё равно мало, возвращаем то, что есть (но не пустой)
-    return filtered[:10] if filtered else []
+            return []
+    return exclude_domains(dedupe_urls(exa_urls), excluded)
 
 def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
     site_desc = summarize_profile(our_profile)
-    # Усиленный промт с требованием минимум 10 URL
     if competitor_type == "direct":
         prompt = f"""
 Ты ищешь прямых конкурентов для сайта {domain}. Профиль нашего сайта:
 {site_desc}
 
-Найди не менее 10 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
-Верни только список корневых URL, по одному на строку, без пояснений. Если не знаешь точных URL, укажи реально существующие сайты, которые, по твоему мнению, являются прямыми конкурентами.
+Найди минимум 10 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан).
+Исключи маркетплейсы, доски объявлений, государственные учреждения.
+Верни только список корневых URL, по одному на строку, без пояснений.
 """
     else:
         prompt = f"""
 Ты ищешь косвенных конкурентов для сайта {domain}. Профиль нашего сайта:
 {site_desc}
 
-Найди не менее 10 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
-Верни только список корневых URL, по одному на строку, без пояснений. Постарайся найти как можно больше реальных сайтов.
+Найди минимум 10 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории.
+Исключи маркетплейсы, доски объявлений.
+Верни только список корневых URL, по одному на строку, без пояснений.
 """
-    for attempt in range(2):
-        try:
-            response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.3, max_tokens=2000)
-            urls = extract_candidate_urls(response.get("content", ""))
-            filtered = exclude_domains(dedupe_urls(urls), excluded)
-            if len(filtered) >= 5:
-                return filtered[:15]
-        except Exception as e:
-            st.warning(f"Попытка {attempt+1} LLM поиска не удалась: {e}")
-    return filtered[:10] if filtered else []
-
-# ========== 5. ПРОВЕРКА КОНКУРЕНТОВ (С ПРИНУДИТЕЛЬНЫМ ЗАЧИСЛЕНИЕМ) ==========
-def verify_competitors(our_profile, candidate_urls, target_type, our_region=None):
-    if our_region is None:
-        our_region = extract_region(our_profile)
-
-    verified = []
-    rejected = []
-    seen = set()
-    unique = []
-    for raw in candidate_urls:
-        url = normalize_root_url(raw)
-        dom = get_domain_key(url)
-        if dom and dom not in seen:
-            seen.add(dom)
-            unique.append(url)
-
-    def process(url):
-        domain = get_domain_key(url)
-        if domain == our_profile.get("domain"):
-            return ("reject", {"url": url, "reason": "Свой сайт", "type": target_type})
-        if is_blocked_domain(domain):
-            return ("reject", {"url": url, "reason": "Маркетплейс/агрегатор", "type": target_type})
-
-        candidate_profile = fetch_site_profile(url)
-        if not candidate_profile.get("ok"):
-            return ("reject", {"url": url, "reason": f"Недоступен: {candidate_profile.get('issue', 'ошибка')}", "type": target_type})
-
-        # Проверка региона
-        candidate_region = extract_region(candidate_profile)
-        if our_region.lower() not in ["россия", "рф", "вся россия", "по всей стране"] and \
-           candidate_region.lower() not in ["россия", "рф", "вся россия", "по всей стране"] and \
-           our_region.lower() != candidate_region.lower():
-            return ("reject", {"url": candidate_profile["final_url"], "reason": f"Несовпадение региона: наш ({our_region}) vs кандидат ({candidate_region})", "type": target_type})
-
-        # Сравнение профилей
-        our_keywords_set = set(our_profile.get("keywords", []))
-        candidate_keywords_set = set(candidate_profile.get("keywords", []))
-        if not (our_keywords_set & candidate_keywords_set):
-            return ("reject", {"url": candidate_profile["final_url"], "reason": "Нет общих ключевых слов", "type": target_type})
-
-        comparison = compare_profiles(our_profile, candidate_profile)
-        if comparison["score"] < 10:
-            return ("reject", {"url": candidate_profile["final_url"], "reason": f"Низкая оценка сходства ({comparison['score']}%)", "type": target_type})
-
-        if not is_relevant_competitor(our_profile, candidate_profile):
-            return ("reject", {"url": candidate_profile["final_url"], "reason": "Не является релевантным конкурентом по оценке LLM", "type": target_type})
-
-        actual_type = classify_competitor(comparison)
-
-        # ПРИНУДИТЕЛЬНОЕ ЗАЧИСЛЕНИЕ при высоком score
-        if target_type == "direct" and actual_type != "direct" and comparison["score"] >= 35 and comparison["shared_keywords"]:
-            actual_type = "direct"
-
-        rec = {
-            "url": candidate_profile["final_url"], "domain": candidate_profile["domain"], "title": candidate_profile["title"],
-            "description": candidate_profile["description"], "keywords": candidate_profile.get("keywords", [])[:10],
-            "live": True, "score": comparison["score"], "relevance": comparison["relevance"],
-            "shared_keywords": comparison["shared_keywords"], "scale_comment": comparison["scale_comment"],
-            "reason": comparison["reason"], "competitor_type": actual_type or "rejected",
-        }
-        if target_type == "direct":
-            if actual_type == "direct":
-                return ("verify", rec)
-            else:
-                return ("reject", {"url": candidate_profile["final_url"], "reason": f"Не прошёл как точный ({comparison['score']}%). {comparison['reason']}", "type": "direct"})
-        else:
-            if actual_type == "indirect":
-                return ("verify", rec)
-            elif actual_type == "direct":
-                return ("reject", {"url": candidate_profile["final_url"], "reason": "Слишком близок к прямому", "type": "indirect"})
-            else:
-                return ("reject", {"url": candidate_profile["final_url"], "reason": f"Недостаточная близость ({comparison['score']}%). {comparison['reason']}", "type": "indirect"})
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
-        futures = [ex.submit(process, url) for url in unique]
-        for fut in concurrent.futures.as_completed(futures):
-            try:
-                action, data = fut.result()
-                (verified if action == "verify" else rejected).append(data)
-            except Exception as e:
-                rejected.append({"url": "ошибка", "reason": str(e), "type": target_type})
-    verified.sort(key=lambda x: x["score"], reverse=True)
-    return verified, rejected
-
-# ========== 6. ОСНОВНОЙ АНАЛИЗ С ВЫВОДОМ КОЛИЧЕСТВА ==========
-def run_full_analysis(domain):
-    our = fetch_site_profile(domain)
-    if not our.get("ok"):
-        raise RuntimeError(f"Не удалось открыть наш сайт: {our.get('issue', 'ошибка')}")
-    region = extract_region(our)
-    outline = get_site_outline(our)
-
-    dir_cand = get_candidate_domains(domain, our, "direct")
-    ind_cand = get_candidate_domains(domain, our, "indirect")
-
-    st.info(f"🔍 Найдено кандидатов: прямых — {len(dir_cand)}, косвенных — {len(ind_cand)}")
-
-    if not dir_cand and not ind_cand:
-        raise RuntimeError("Не удалось получить кандидатов")
-
-    dir_ver, dir_rej = verify_competitors(our, dir_cand, "direct", region)
-    dir_doms = {d["domain"] for d in dir_ver}
-    ind_cand = exclude_domains(ind_cand, dir_doms)
-    ind_ver, ind_rej = verify_competitors(our, ind_cand, "indirect", region)
-    rej = dir_rej + ind_rej
-    ind_ver, rej = ensure_min_indirect(domain, our, dir_ver, ind_ver, rej)
-
-    st.info(f"✅ После проверки: прямых конкурентов — {len(dir_ver)}, косвенных — {len(ind_ver)}")
-
-    dir_ver = dir_ver[:10]
-    ind_ver = ind_ver[:10]
-    messengers_platforms = recommend_messengers_platforms(our, dir_ver, ind_ver, region)
-    report = build_final_report(our, outline, dir_ver, ind_ver, rej, region, messengers_platforms)
-    return report, our, dir_ver, ind_ver, rej
-
-def rerun_competitors_only(domain, our_profile):
-    global current_line
-    saved_line = current_line
-    current_line = 3
     try:
-        region = extract_region(our_profile)
-        dir_cand = get_candidate_domains_llm(domain, our_profile, "direct")
-        ind_cand = get_candidate_domains_llm(domain, our_profile, "indirect")
-
-        st.info(f"🔍 (перепроверка) Найдено кандидатов: прямых — {len(dir_cand)}, косвенных — {len(ind_cand)}")
-
-        dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct", region)
-        dir_doms = {d["domain"] for d in dir_ver}
-        ind_cand = exclude_domains(ind_cand, dir_doms)
-        ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect", region)
-        rej = dir_rej + ind_rej
-        ind_ver, rej = ensure_min_indirect(domain, our_profile, dir_ver, ind_ver, rej)
-
-        st.info(f"✅ (перепроверка) После проверки: прямых конкурентов — {len(dir_ver)}, косвенных — {len(ind_ver)}")
-
-        return dir_ver[:10], ind_ver[:10], rej
-    finally:
-        current_line = saved_line
+        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1800)
+        urls = extract_candidate_urls(response.get("content", ""))
+    except Exception as e:
+        st.warning(f"Ошибка LLM при поиске кандидатов: {e}")
+        urls = []
+    return exclude_domains(dedupe_urls(urls), excluded)
 
 # ========== 7. ИЗВЛЕЧЕНИЕ РЕГИОНА ==========
 @st.cache_data(ttl=3600)
