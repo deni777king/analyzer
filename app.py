@@ -171,7 +171,7 @@ if "current_user_id" not in st.session_state:
 user_id = st.session_state.current_user_id
 queue = st.session_state.user_queue
 
-# ========== 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ПАРСИНГ, СРАВНЕНИЕ) ==========
+# ========== 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -528,7 +528,7 @@ def browse_page(url: str) -> str:
     }
     return json.dumps(payload, ensure_ascii=False)
 
-# ========== 5. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM (с переключением линий) ==========
+# ========== 5. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM ==========
 tools = [
     {
         "type": "function",
@@ -584,15 +584,40 @@ FINAL_REPORT_PROMPT = """
 Сформируй итоговый ответ строго по структуре:
 1.1 Страна, регион/город
 1.2 Работает ли по всей стране или локально
-1.3 Топ-10 точных запросов в месяц (коммерческие, без региона, средне- и низкочастотные)
+1.3 Топ-10 точных запросов в месяц (только коммерческие, низкочастотные, узконаправленные, исключая информационные и общие фразы)
 1.4 Самые ближайшие прямые конкуренты (с обоснованием)
-1.5 Мессенджеры для привлечения клиентов (в %)
-1.6 Площадки для рекламы (в %)
+1.5 Мессенджеры для привлечения клиентов (в %) – на основе анализа конкурентов и региона, а не только данных сайта
+1.6 Площадки для рекламы (в %) – релевантные тематике (например, Яндекс.Маркет, Avito, Profi.ru и т.п.)
 1.7 Сайты конкурентов (ссылки) – топ-10
 1.8 Коммерческий или некоммерческий?
 1.9 Противоречия / отсутствие данных
 
 Не добавляй лишнего. Если информации недостаточно – укажи. Ответ оформляй в виде списка с явными номерами пунктов.
+"""
+
+MESSENGER_RECOMMEND_PROMPT = """
+Ты аналитик по маркетингу. На основе данных о сайте и его конкурентах определи, какие мессенджеры и площадки лучше всего подойдут для привлечения клиентов.
+
+Данные о нашем сайте:
+{our_summary}
+
+Данные о конкурентах (до 10 сайтов):
+{competitors_summary}
+
+Регион работы: {region}
+
+Проанализируй:
+- Какие мессенджеры популярны в этом регионе (Telegram, WhatsApp, Viber и др.)
+- Какие площадки соответствуют тематике сайта (например, для товаров – Яндекс.Маркет, Ozon, Wildberries; для услуг – Avito, Profi.ru, YouDo; для b2b – партнёрские сети и т.д.)
+- Учитывай, что в РФ некоторые мессенджеры могут быть заблокированы.
+
+Верни ответ строго в формате:
+Мессенджеры (с процентами):
+- Название: %
+- ...
+Площадки (с процентами):
+- Название: %
+- ...
 """
 
 # Адаптеры для LLM
@@ -675,7 +700,6 @@ def call_gemini(messages, temperature=0.3, max_tokens=4096):
 
 def call_llm_with_fallback(messages, use_tools=False, temperature=0.3, max_tokens=4096):
     if use_tools:
-        # Только Mistral поддерживает tools
         try:
             return call_mistral(messages, use_tools=True, temperature=temperature, max_tokens=max_tokens)
         except Exception as e:
@@ -734,7 +758,7 @@ def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
                 conversation.append(r)
     return "Не удалось завершить обработку tool calls."
 
-# ========== 6. ПОИСК КОНКУРЕНТОВ (EXA) ==========
+# ========== 6. ПОИСК КОНКУРЕНТОВ ==========
 def search_exa(query: str, num_results: int = 15) -> list[str]:
     keys = get_exa_keys()
     if not keys:
@@ -775,10 +799,8 @@ def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains
             return []
     return exclude_domains(dedupe_urls(exa_urls), excluded)
 
-# ========== 7. ПОИСК КОНКУРЕНТОВ ТОЛЬКО ЧЕРЕЗ LLM (ДЛЯ ПЕРЕПРОВЕРКИ) ==========
 def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
-    # Формируем промт для LLM
     site_desc = summarize_profile(our_profile)
     if competitor_type == "direct":
         prompt = f"""
@@ -806,10 +828,9 @@ def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_dom
         urls = []
     return exclude_domains(dedupe_urls(urls), excluded)
 
-# ========== 8. ИЗВЛЕЧЕНИЕ РЕГИОНА ==========
+# ========== 7. ИЗВЛЕЧЕНИЕ РЕГИОНА ==========
 @st.cache_data(ttl=3600)
 def extract_region(profile: dict) -> str:
-    """Извлекает регион (город/страна) из профиля сайта с помощью LLM."""
     prompt = f"""
 Профиль сайта:
 {summarize_profile(profile)}
@@ -826,7 +847,7 @@ def extract_region(profile: dict) -> str:
         st.warning(f"Ошибка определения региона: {e}")
         return "неизвестно"
 
-# ========== 9. ПРОВЕРКА КОНКУРЕНТОВ (С УЧЁТОМ РЕГИОНА) ==========
+# ========== 8. ПРОВЕРКА КОНКУРЕНТОВ (С УЧЁТОМ РЕГИОНА) ==========
 def verify_competitors(our_profile, candidate_urls, target_type, our_region=None):
     if our_region is None:
         our_region = extract_region(our_profile)
@@ -855,7 +876,6 @@ def verify_competitors(our_profile, candidate_urls, target_type, our_region=None
 
         # Проверка региона
         candidate_region = extract_region(candidate_profile)
-        # Если регион нашего сайта не "Россия" (или не "по всей стране"), и регионы не совпадают, отклоняем
         if our_region.lower() not in ["россия", "рф", "вся россия", "по всей стране"] and \
            candidate_region.lower() not in ["россия", "рф", "вся россия", "по всей стране"] and \
            our_region.lower() != candidate_region.lower():
@@ -871,7 +891,6 @@ def verify_competitors(our_profile, candidate_urls, target_type, our_region=None
         if comparison["score"] < 10:
             return ("reject", {"url": candidate_profile["final_url"], "reason": f"Низкая оценка сходства ({comparison['score']}%)", "type": target_type})
 
-        # LLM-проверка релевантности
         if not is_relevant_competitor(our_profile, candidate_profile):
             return ("reject", {"url": candidate_profile["final_url"], "reason": "Не является релевантным конкурентом по оценке LLM", "type": target_type})
 
@@ -927,7 +946,7 @@ def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
         st.warning(f"Ошибка LLM при проверке релевантности: {e}")
         return True
 
-# ========== 10. ОСНОВНЫЕ ФУНКЦИИ АНАЛИЗА ==========
+# ========== 9. ОСНОВНЫЕ ФУНКЦИИ АНАЛИЗА ==========
 def get_site_outline(our_profile):
     prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
     response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1200)
@@ -950,7 +969,29 @@ def ensure_min_indirect(domain, our_profile, direct_verified, indirect_verified,
     indirect_verified.sort(key=lambda x: x["score"], reverse=True)
     return indirect_verified, rejected
 
-def build_final_report(our_profile, site_outline, verified_direct, verified_indirect, rejected):
+def recommend_messengers_platforms(our_profile, verified_direct, verified_indirect, region):
+    # Собираем краткую информацию о конкурентах
+    competitors = verified_direct[:5] + verified_indirect[:5]
+    comp_summary = "\n".join([
+        f"- {c['url']} (сходство {c['score']}%)\n  Ключевые слова: {', '.join(c['shared_keywords'][:5])}"
+        for c in competitors if c.get("shared_keywords")
+    ])
+    if not comp_summary:
+        comp_summary = "Нет данных о конкурентах."
+    our_summary = summarize_profile(our_profile)
+    prompt = MESSENGER_RECOMMEND_PROMPT.format(
+        our_summary=our_summary,
+        competitors_summary=comp_summary,
+        region=region
+    )
+    try:
+        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=800)
+        return response.get("content", "")
+    except Exception as e:
+        st.warning(f"Ошибка при рекомендации мессенджеров: {e}")
+        return "Рекомендации не удалось сформировать."
+
+def build_final_report(our_profile, site_outline, verified_direct, verified_indirect, rejected, region, messengers_platforms):
     vd_json = json.dumps(verified_direct[:10], ensure_ascii=False, indent=2)
     vi_json = json.dumps(verified_indirect[:10], ensure_ascii=False, indent=2)
     rj_json = json.dumps(rejected[:20], ensure_ascii=False, indent=2)
@@ -961,51 +1002,55 @@ def build_final_report(our_profile, site_outline, verified_direct, verified_indi
         verified_indirect_json=vi_json,
         rejected_json=rj_json,
     )
-    response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.25, max_tokens=3000)
-    return response.get("content", "")
+    # Добавляем рекомендации по мессенджерам/площадкам в текст отчёта
+    full_report = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.25, max_tokens=3000).get("content", "")
+    # Заменяем или дополняем пункты 1.5 и 1.6
+    if messengers_platforms:
+        # Вставляем рекомендации после пункта 1.4 (или в соответствующие места)
+        full_report = re.sub(r"(1\.4.*?)(\n\n1\.5)", r"\1\n\nРекомендованные мессенджеры и площадки:\n" + messengers_platforms + r"\n\n\2", full_report, flags=re.DOTALL)
+    return full_report
 
 def run_full_analysis(domain):
     our = fetch_site_profile(domain)
     if not our.get("ok"):
         raise RuntimeError(f"Не удалось открыть наш сайт: {our.get('issue', 'ошибка')}")
+    region = extract_region(our)
     outline = get_site_outline(our)
     dir_cand = get_candidate_domains(domain, our, "direct")
     ind_cand = get_candidate_domains(domain, our, "indirect")
     if not dir_cand and not ind_cand:
         raise RuntimeError("Не удалось получить кандидатов")
-    dir_ver, dir_rej = verify_competitors(our, dir_cand, "direct")
+    dir_ver, dir_rej = verify_competitors(our, dir_cand, "direct", region)
     dir_doms = {d["domain"] for d in dir_ver}
     ind_cand = exclude_domains(ind_cand, dir_doms)
-    ind_ver, ind_rej = verify_competitors(our, ind_cand, "indirect")
+    ind_ver, ind_rej = verify_competitors(our, ind_cand, "indirect", region)
     rej = dir_rej + ind_rej
     ind_ver, rej = ensure_min_indirect(domain, our, dir_ver, ind_ver, rej)
     dir_ver = dir_ver[:10]
     ind_ver = ind_ver[:10]
-    report = build_final_report(our, outline, dir_ver, ind_ver, rej)
+    messengers_platforms = recommend_messengers_platforms(our, dir_ver, ind_ver, region)
+    report = build_final_report(our, outline, dir_ver, ind_ver, rej, region, messengers_platforms)
     return report, our, dir_ver, ind_ver, rej
 
 def rerun_competitors_only(domain, our_profile):
-    # При перепроверке используем LLM для поиска кандидатов (без Exa)
-    # Принудительно переключаем линию на 3 (только Groq/Gemini)
     global current_line
     saved_line = current_line
     current_line = 3
     try:
-        # Извлекаем регион нашего сайта (один раз)
-        our_region = extract_region(our_profile)
+        region = extract_region(our_profile)
         dir_cand = get_candidate_domains_llm(domain, our_profile, "direct")
         ind_cand = get_candidate_domains_llm(domain, our_profile, "indirect")
-        dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct", our_region)
+        dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct", region)
         dir_doms = {d["domain"] for d in dir_ver}
         ind_cand = exclude_domains(ind_cand, dir_doms)
-        ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect", our_region)
+        ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect", region)
         rej = dir_rej + ind_rej
         ind_ver, rej = ensure_min_indirect(domain, our_profile, dir_ver, ind_ver, rej)
         return dir_ver[:10], ind_ver[:10], rej
     finally:
         current_line = saved_line
 
-# ========== 11. ИМИДЖЕВЫЙ АНАЛИЗ ==========
+# ========== 10. ИМИДЖЕВЫЙ АНАЛИЗ ==========
 IMIDGE_PROMPT = """
 Ты аналитик сайтов. Проверь сайт по URL и определи, относится ли он к "имиджевым клиентам".
 
@@ -1035,7 +1080,7 @@ def analyze_imidj(url: str) -> str:
     response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=300)
     return response.get("content", "Ошибка анализа")
 
-# ========== 12. ФУНКЦИЯ 3 АУДИТА ==========
+# ========== 11. ФУНКЦИЯ 3 АУДИТА ==========
 AUDIT_GROQ_KEYS = [GROQ_KEYS_ALL[0], GROQ_KEYS_ALL[1]]
 AUDIT_GEMINI_KEYS = [GEMINI_KEYS_ALL[0], GEMINI_KEYS_ALL[1]]
 audit_groq_rr = RoundRobin(AUDIT_GROQ_KEYS)
@@ -1158,7 +1203,7 @@ URL: {url}
     response = audit_call_with_fallback([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=1500)
     return response.get("content", "Ошибка генерации аудита")
 
-# ========== 13. ИНТЕРФЕЙС STREAMLIT ==========
+# ========== 12. ИНТЕРФЕЙС STREAMLIT ==========
 def build_validation_rows(verified_direct, verified_indirect):
     all_ver = verified_direct + verified_indirect
     all_ver.sort(key=lambda x: x["score"], reverse=True)
@@ -1277,7 +1322,6 @@ with col2:
                 st.info("🔍 Начинаем перепроверку...")
             with st.spinner("Перепроверяю..."):
                 try:
-                    # Если профиль нашего сайта ещё не загружен, загружаем
                     our_profile = st.session_state.our_profile
                     if not our_profile:
                         our_profile = fetch_site_profile(domain)
