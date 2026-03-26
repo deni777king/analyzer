@@ -17,11 +17,9 @@ from bs4 import BeautifulSoup
 st.set_page_config(page_title="Конкурентный Анализатор | 3 Аудит", layout="wide")
 st.title("Конкурентный Анализатор")
 
-# ============================================================
-# 1. НАСТРОЙКА API-КЛЮЧЕЙ (НОВЫЕ)
-# ============================================================
+# ========== 1. НАСТРОЙКА КЛЮЧЕЙ (НОВЫЕ ИЗ ТЗ) ==========
 
-# --- Mistral (для линий 1 и 2) ---
+# --- Mistral (4+3 ключа) ---
 MISTRAL_KEYS_LINE1 = [
     "uiJLmg6FTBoccElFrCbhV06PDmLPPVuH",
     "NHXvVYh8il4ydpG40zdAr2FypP0PdrOH",
@@ -34,7 +32,7 @@ MISTRAL_KEYS_LINE2 = [
     "xDTZtoJp68uT9Qqsr5PveZMNmqczalwa",
 ]
 
-# --- Exa (для линий 1 и 2) ---
+# --- Exa (4+3 ключа) ---
 EXA_KEYS_LINE1 = [
     "6641c418-b339-4a60-9015-cfe635a8dee0",
     "9963984d-6b17-4bbc-8c8b-8c9c1eaeb5a2",
@@ -47,7 +45,7 @@ EXA_KEYS_LINE2 = [
     "1f664dc7-e278-40ed-a4e6-58397d0dfbee",
 ]
 
-# --- Groq (все 6 ключей) ---
+# --- Groq (6 ключей) ---
 GROQ_KEYS_ALL = [
     "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",
     "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",
@@ -56,6 +54,9 @@ GROQ_KEYS_ALL = [
     "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",
     "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",
 ]
+GROQ_KEYS_LINE1 = [GROQ_KEYS_ALL[0]]                     # 1 ключ
+GROQ_KEYS_LINE2 = [GROQ_KEYS_ALL[1], GROQ_KEYS_ALL[2]]   # 2 ключа
+GROQ_KEYS_LINE3 = [GROQ_KEYS_ALL[3], GROQ_KEYS_ALL[4], GROQ_KEYS_ALL[5]]  # 3 ключа
 
 # --- Gemini (5 ключей) ---
 GEMINI_KEYS_ALL = [
@@ -65,23 +66,15 @@ GEMINI_KEYS_ALL = [
     "AIzaSyAJP67w_9Z5xmSDVwcE_2L5Rz-v4ktRJSo",
     "AIzaSyDdjbQ47TUjsbUigDgctHUnSJ-BrXvvvkQ",
 ]
-
-# --- Распределение по линиям (согласно ТЗ) ---
-# Линия 1: 4/4 Exa/Mistral, 1/1 Groq/Gemini
-GROQ_KEYS_LINE1 = [GROQ_KEYS_ALL[0]]
-GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]
-# Линия 2: 3/3 Exa/Mistral, 2/2 Groq/Gemini
-GROQ_KEYS_LINE2 = [GROQ_KEYS_ALL[1], GROQ_KEYS_ALL[2]]
-GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]]
-# Линия 3: без Exa и Mistral, только 3/3 Groq/Gemini
-GROQ_KEYS_LINE3 = [GROQ_KEYS_ALL[3], GROQ_KEYS_ALL[4], GROQ_KEYS_ALL[5]]
-GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4], GEMINI_KEYS_ALL[5]]
+GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]                     # 1 ключ
+GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]] # 2 ключа
+GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4]] # 2 ключа (т.к. у нас 5 ключей, третий используем 2 ключа)
 
 # --- Jina для 3 Аудита (один ключ) ---
 JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
 JINA_READER_URL = "https://r.jina.ai/"
 
-# Конфигурация линий
+# --- Настройки линий ---
 LINE_CONFIG = {
     1: {
         "mistral": MISTRAL_KEYS_LINE1,
@@ -103,7 +96,7 @@ LINE_CONFIG = {
     }
 }
 
-# Round-robin для Groq/Gemini внутри линии
+# Счётчики для round-robin внутри линии
 class RoundRobin:
     def __init__(self, keys):
         self.keys = keys
@@ -117,7 +110,7 @@ class RoundRobin:
             self.idx += 1
             return k
 
-# Текущая активная линия (изменяется при ошибках)
+# Состояние линий (активная линия, round‑robin объекты)
 current_line = 1
 line_rr = {
     1: {"groq": RoundRobin(LINE_CONFIG[1]["groq"]),
@@ -144,9 +137,7 @@ def switch_line():
         st.error("❌ Все линии исчерпаны. Проверьте API-ключи.")
         return False
 
-# ============================================================
-# 2. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ПОЛЬЗОВАТЕЛЕЙ
-# ============================================================
+# ========== 2. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ПОЛЬЗОВАТЕЛЕЙ ==========
 class UserQueue:
     def __init__(self):
         self.queue = deque()
@@ -180,9 +171,8 @@ if "current_user_id" not in st.session_state:
 user_id = st.session_state.current_user_id
 queue = st.session_state.user_queue
 
-# ============================================================
-# 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (парсинг, токенизация, сравнение)
-# ============================================================
+# ========== 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (ПАРСИНГ, СРАВНЕНИЕ) ==========
+
 REQUEST_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -359,7 +349,6 @@ def classify_competitor(comparison: dict) -> str | None:
     shared_count = len(comparison["shared_keywords"])
     body_cosine = comparison["body_cosine"]
     header_overlap = comparison["header_overlap"]
-
     if score >= 30 and shared_count >= 2 and (body_cosine >= 0.15 or header_overlap >= 0.12):
         return "direct"
     if score >= 18 and shared_count >= 1 and (body_cosine >= 0.08 or header_overlap >= 0.07):
@@ -429,17 +418,14 @@ def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
         result.append(url)
     return result
 
-# ============================================================
-# 4. ФУНКЦИИ ДЛЯ ПОЛУЧЕНИЯ ПРОФИЛЯ САЙТА (с Jina)
-# ============================================================
-# Стандартный парсинг (используется везде, кроме 3 аудита)
+# ========== 4. ФУНКЦИИ ДЛЯ ЗАГРУЗКИ ПРОФИЛЕЙ САЙТОВ ==========
+# Обычный профиль (для конкурентного анализа) – использует стандартный парсинг (без Jina)
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
     variants = build_url_variants(url_or_domain)
     last_error = "Не удалось открыть сайт"
+
     for candidate in variants:
-        # Сначала попробуем Jina с обычной ротацией? В ТЗ Jina только для 3 аудита, но можно оставить как есть.
-        # Оставим старый парсинг как основной, так как ключи Jina у нас только для аудита.
         try:
             response = requests.get(candidate, headers=REQUEST_HEADERS, timeout=15, allow_redirects=True)
             status_code = response.status_code
@@ -543,9 +529,7 @@ def browse_page(url: str) -> str:
     }
     return json.dumps(payload, ensure_ascii=False)
 
-# ============================================================
-# 5. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM (с переключением линий)
-# ============================================================
+# ========== 5. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM (с переключением линий) ==========
 tools = [
     {
         "type": "function",
@@ -564,6 +548,56 @@ tools = [
     }
 ]
 
+# Промты
+SITE_SUMMARY_PROMPT = """
+Ты аналитик сайтов. Ниже профиль нашего сайта:
+{site_summary}
+Проанализируй сайт и дай краткую оценку по пунктам:
+1. Коммерческий или некоммерческий? (если есть противоречия, укажи)
+2. Страна, регион/город
+3. По всей стране или локально?
+4. Топ-10 ключевых слов (только коммерческие, без региона, приоритет средне- и низкочастотным)
+6. Мессенджеры и площадки для рекламы
+Отвечай кратко, строго по структуре.
+"""
+
+DIRECT_CANDIDATE_PROMPT = """
+Ты ищешь кандидатов в ТОЧНЫЕ (прямые) конкуренты для сайта {domain}.
+Профиль нашего сайта: {site_summary}
+Правила: используй browse_page для каждого кандидата, исключай маркетплейсы, стремись к минимум 5. Верни только список корневых URL.
+"""
+
+INDIRECT_CANDIDATE_PROMPT = """
+Ты ищешь кандидатов в КОСВЕННЫЕ конкуренты для сайта {domain}.
+Профиль нашего сайта: {site_summary}
+Правила: используй browse_page, исключай прямых конкурентов и маркетплейсы, стремись к минимум 5. Верни только список корневых URL.
+"""
+
+FINAL_REPORT_PROMPT = """
+Ты аналитик сайтов. Используй только данные ниже и не выдумывай новые сайты.
+
+Профиль нашего сайта: {site_summary}
+Черновик анализа: {site_outline}
+Проверенные точные конкуренты: {verified_direct_json}
+Проверенные косвенные конкуренты: {verified_indirect_json}
+Отклонённые кандидаты: {rejected_json}
+
+Сформируй итоговый ответ строго по структуре:
+1.1 Страна, регион/город
+1.2 Работает ли по всей стране или локально
+1.3 Топ-10 точных запросов в месяц (коммерческие, без региона, средне- и низкочастотные)
+1.4 Самые ближайшие прямые конкуренты (с обоснованием)
+1.5 Мессенджеры для привлечения клиентов (в %)
+1.6 Площадки для рекламы (в %)
+1.7 Сайты конкурентов (ссылки) – топ-10
+1.8 Коммерческий или некоммерческий?
+1.9 Противоречия / отсутствие данных
+
+Не добавляй лишнего. Если информации недостаточно – укажи. Ответ оформляй в виде списка с явными номерами пунктов.
+"""
+
+# Адаптеры для LLM
+MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
 
@@ -582,14 +616,14 @@ def call_mistral(messages, use_tools=False, temperature=0.3, max_tokens=4096):
             }
             if use_tools:
                 payload["tools"] = tools
-            response = requests.post("https://api.mistral.ai/v1/chat/completions", json=payload, headers=headers, timeout=90)
+            response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
             if response.status_code == 200:
                 return response.json()["choices"][0]["message"]
             elif response.status_code == 429:
                 raise Exception("Rate limit")
             else:
                 continue
-        except Exception:
+        except Exception as e:
             continue
     raise Exception("Все ключи Mistral в текущей линии не сработали")
 
@@ -646,11 +680,13 @@ def call_llm_with_fallback(messages, use_tools=False, temperature=0.3, max_token
         try:
             return call_mistral(messages, use_tools=True, temperature=temperature, max_tokens=max_tokens)
         except Exception as e:
-            if "Rate limit" in str(e) and switch_line():
-                return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
+            if "Rate limit" in str(e):
+                if switch_line():
+                    return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
+                else:
+                    raise
             raise
     else:
-        # Пробуем всех по очереди с переключением линии при лимитах
         providers = [
             ("Mistral", call_mistral),
             ("Gemini", call_gemini),
@@ -660,22 +696,50 @@ def call_llm_with_fallback(messages, use_tools=False, temperature=0.3, max_token
             try:
                 return func(messages, temperature=temperature, max_tokens=max_tokens)
             except Exception as e:
-                if "Rate limit" in str(e):
-                    # Пробуем переключить линию и повторить с новыми ключами
+                if "Rate limit" in str(e) or "429" in str(e):
                     if switch_line():
                         return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
                     else:
-                        raise
+                        continue
                 continue
         raise Exception("Все провайдеры не смогли обработать запрос")
 
-# ============================================================
-# 6. ПОИСК КОНКУРЕНТОВ (Exa)
-# ============================================================
+def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
+    conversation = list(messages)
+    max_rounds = 12
+    for _ in range(max_rounds):
+        try:
+            msg = call_llm_with_fallback(conversation, use_tools=True, temperature=temperature, max_tokens=max_tokens)
+        except Exception as e:
+            st.error(f"Ошибка вызова LLM с tools: {e}")
+            raise
+        conversation.append(msg)
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            return msg.get("content", "")
+        def process(tc):
+            func = tc.get("function", {})
+            if func.get("name") != "browse_page":
+                return None
+            try:
+                args = json.loads(func.get("arguments", "{}"))
+                url = args.get("url", "")
+                content = browse_page(url) if url else json.dumps({"error": "Пустой URL"}, ensure_ascii=False)
+            except Exception as e:
+                content = json.dumps({"error": str(e)}, ensure_ascii=False)
+            return {"role": "tool", "tool_call_id": tc["id"], "name": "browse_page", "content": content}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            results = list(ex.map(process, tool_calls))
+        for r in results:
+            if r:
+                conversation.append(r)
+    return "Не удалось завершить обработку tool calls."
+
+# ========== 6. ПОИСК КОНКУРЕНТОВ (EXA) ==========
 def search_exa(query: str, num_results: int = 15) -> list[str]:
     keys = get_exa_keys()
     if not keys:
-        raise Exception("Нет ключей Exa в текущей линии")
+        return []
     for api_key in keys:
         try:
             url = "https://api.exa.ai/search"
@@ -693,7 +757,7 @@ def search_exa(query: str, num_results: int = 15) -> list[str]:
                 return dedupe_urls(urls)
             elif response.status_code == 429:
                 continue
-        except Exception:
+        except:
             continue
     raise Exception("Все ключи Exa в текущей линии не сработали")
 
@@ -712,29 +776,7 @@ def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains
             return []
     return exclude_domains(dedupe_urls(exa_urls), excluded)
 
-# ============================================================
-# 7. ПРОВЕРКА КОНКУРЕНТОВ (с LLM-фильтром)
-# ============================================================
-def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
-    our_summary = summarize_profile(our_profile)
-    candidate_summary = summarize_profile(candidate_profile)
-    prompt = f"""
-Наш сайт:
-{our_summary}
-
-Сайт-кандидат:
-{candidate_summary}
-
-Вопрос: Является ли сайт-кандидат прямым или косвенным конкурентом для нашего сайта? Ответь только "да" или "нет".
-"""
-    try:
-        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0, max_tokens=10)
-        answer = response.get("content", "").strip().lower()
-        return "да" in answer and "нет" not in answer
-    except Exception as e:
-        st.warning(f"Ошибка LLM при проверке релевантности: {e}")
-        return True
-
+# ========== 7. ПРОВЕРКА КОНКУРЕНТОВ ==========
 def verify_competitors(our_profile, candidate_urls, target_type):
     verified = []
     rejected = []
@@ -767,11 +809,11 @@ def verify_competitors(our_profile, candidate_urls, target_type):
         if comparison["score"] < 10:
             return ("reject", {"url": candidate_profile["final_url"], "reason": f"Низкая оценка сходства ({comparison['score']}%)", "type": target_type})
 
+        # LLM-проверка релевантности
         if not is_relevant_competitor(our_profile, candidate_profile):
             return ("reject", {"url": candidate_profile["final_url"], "reason": "Не является релевантным конкурентом по оценке LLM", "type": target_type})
 
         actual_type = classify_competitor(comparison)
-
         rec = {
             "url": candidate_profile["final_url"], "domain": candidate_profile["domain"], "title": candidate_profile["title"],
             "description": candidate_profile["description"], "keywords": candidate_profile.get("keywords", [])[:10],
@@ -779,7 +821,6 @@ def verify_competitors(our_profile, candidate_urls, target_type):
             "shared_keywords": comparison["shared_keywords"], "scale_comment": comparison["scale_comment"],
             "reason": comparison["reason"], "competitor_type": actual_type or "rejected",
         }
-
         if target_type == "direct":
             if actual_type == "direct":
                 return ("verify", rec)
@@ -804,6 +845,32 @@ def verify_competitors(our_profile, candidate_urls, target_type):
     verified.sort(key=lambda x: x["score"], reverse=True)
     return verified, rejected
 
+def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
+    our_summary = summarize_profile(our_profile)
+    candidate_summary = summarize_profile(candidate_profile)
+    prompt = f"""
+Наш сайт:
+{our_summary}
+
+Сайт-кандидат:
+{candidate_summary}
+
+Вопрос: Является ли сайт-кандидат прямым или косвенным конкурентом для нашего сайта? Ответь только "да" или "нет".
+"""
+    try:
+        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0, max_tokens=10)
+        answer = response.get("content", "").strip().lower()
+        return "да" in answer and "нет" not in answer
+    except Exception as e:
+        st.warning(f"Ошибка LLM при проверке релевантности: {e}")
+        return True
+
+# ========== 8. ОСНОВНЫЕ ФУНКЦИИ АНАЛИЗА ==========
+def get_site_outline(our_profile):
+    prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
+    response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1200)
+    return response.get("content", "")
+
 def ensure_min_indirect(domain, our_profile, direct_verified, indirect_verified, rejected):
     if len(indirect_verified) >= 5:
         return indirect_verified, rejected
@@ -820,61 +887,6 @@ def ensure_min_indirect(domain, our_profile, direct_verified, indirect_verified,
     rejected.extend(extra_rej)
     indirect_verified.sort(key=lambda x: x["score"], reverse=True)
     return indirect_verified, rejected
-
-# ============================================================
-# 8. ФУНКЦИИ ДЛЯ ЧЕРНОВИКА И ФИНАЛЬНОГО ОТЧЁТА
-# ============================================================
-SITE_SUMMARY_PROMPT = """
-Ты аналитик сайтов. Ниже профиль нашего сайта:
-{site_summary}
-Проанализируй сайт и дай краткую оценку по пунктам:
-1. Коммерческий или некоммерческий? (если есть противоречия, укажи)
-2. Страна, регион/город
-3. По всей стране или локально?
-4. Топ-10 ключевых слов (только коммерческие, без региона, приоритет средне- и низкочастотным)
-6. Мессенджеры и площадки для рекламы
-Отвечай кратко, строго по структуре.
-"""
-
-DIRECT_CANDIDATE_PROMPT = """
-Ты ищешь кандидатов в ТОЧНЫЕ (прямые) конкуренты для сайта {domain}.
-Профиль нашего сайта: {site_summary}
-Правила: используй browse_page для каждого кандидата, исключай маркетплейсы, стремись к минимум 5. Верни только список корневых URL.
-"""
-
-INDIRECT_CANDIDATE_PROMPT = """
-Ты ищешь кандидатов в КОСВЕННЫЕ конкуренты для сайта {domain}.
-Профиль нашего сайта: {site_summary}
-Правила: используй browse_page, исключай прямых конкурентов и маркетплейсы, стремись к минимум 5. Верни только список корневых URL.
-"""
-
-FINAL_REPORT_PROMPT = """
-Ты аналитик сайтов. Используй только данные ниже и не выдумывай новые сайты.
-
-Профиль нашего сайта: {site_summary}
-Черновик анализа: {site_outline}
-Проверенные точные конкуренты: {verified_direct_json}
-Проверенные косвенные конкуренты: {verified_indirect_json}
-Отклонённые кандидаты: {rejected_json}
-
-Сформируй итоговый ответ строго по структуре:
-1.1 Страна, регион/город
-1.2 Работает ли по всей стране или локально
-1.3 Топ-10 точных запросов в месяц (коммерческие, без региона, средне- и низкочастотные)
-1.4 Самые ближайшие прямые конкуренты (с обоснованием)
-1.5 Мессенджеры для привлечения клиентов (в %)
-1.6 Площадки для рекламы (в %)
-1.7 Сайты конкурентов (ссылки) – топ-10
-1.8 Коммерческий или некоммерческий?
-1.9 Противоречия / отсутствие данных
-
-Не добавляй лишнего. Если информации недостаточно – укажи. Ответ оформляй в виде списка с явными номерами пунктов.
-"""
-
-def get_site_outline(our_profile):
-    prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
-    response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1200)
-    return response.get("content", "")
 
 def build_final_report(our_profile, site_outline, verified_direct, verified_indirect, rejected):
     vd_json = json.dumps(verified_direct[:10], ensure_ascii=False, indent=2)
@@ -911,7 +923,7 @@ def run_full_analysis(domain):
     return report, our, dir_ver, ind_ver, rej
 
 def rerun_competitors_only(domain, our_profile):
-    # Принудительно используем линию 3 (только Groq/Gemini)
+    # Принудительно переключаем на линию 3 (только Groq/Gemini)
     global current_line
     saved_line = current_line
     current_line = 3
@@ -928,9 +940,7 @@ def rerun_competitors_only(domain, our_profile):
     finally:
         current_line = saved_line
 
-# ============================================================
-# 9. ИМИДЖЕВЫЙ АНАЛИЗ (отдельная кнопка)
-# ============================================================
+# ========== 9. ИМИДЖЕВЫЙ АНАЛИЗ ==========
 IMIDGE_PROMPT = """
 Ты аналитик сайтов. Проверь сайт по URL и определи, относится ли он к "имиджевым клиентам".
 
@@ -960,9 +970,7 @@ def analyze_imidj(url: str) -> str:
     response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=300)
     return response.get("content", "Ошибка анализа")
 
-# ============================================================
-# 10. 3 АУДИТ (отдельная кнопка, отдельный пул ключей)
-# ============================================================
+# ========== 10. ФУНКЦИЯ 3 АУДИТА ==========
 AUDIT_GROQ_KEYS = [GROQ_KEYS_ALL[0], GROQ_KEYS_ALL[1]]
 AUDIT_GEMINI_KEYS = [GEMINI_KEYS_ALL[0], GEMINI_KEYS_ALL[1]]
 audit_groq_rr = RoundRobin(AUDIT_GROQ_KEYS)
@@ -1085,9 +1093,31 @@ URL: {url}
     response = audit_call_with_fallback([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=1500)
     return response.get("content", "Ошибка генерации аудита")
 
-# ============================================================
-# 11. ОТОБРАЖЕНИЕ РЕЗУЛЬТАТОВ
-# ============================================================
+# ========== 11. ИНТЕРФЕЙС STREAMLIT ==========
+
+# Вспомогательные функции отображения
+def build_validation_rows(verified_direct, verified_indirect):
+    all_ver = verified_direct + verified_indirect
+    all_ver.sort(key=lambda x: x["score"], reverse=True)
+    rows = []
+    for item in all_ver[:10]:
+        rows.append({
+            "URL": item["url"],
+            "Тип": "Точный" if item.get("competitor_type") == "direct" else "Косвенный",
+            "Статус": "OK",
+            "Релевантность": f"{item['score']}% ({item['relevance']})",
+            "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
+            "Комментарий": item.get("scale_comment", ""),
+        })
+    return rows
+
+def render_validation_table(verified_direct, verified_indirect):
+    rows = build_validation_rows(verified_direct, verified_indirect)
+    if not rows:
+        return
+    st.subheader("Топ-10 проверенных конкурентов")
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
 def render_best_competitors(verified_direct, verified_indirect, limit=10):
     combined = verified_direct + verified_indirect
     combined.sort(key=lambda x: x["score"], reverse=True)
@@ -1112,31 +1142,7 @@ def render_best_competitors(verified_direct, verified_indirect, limit=10):
         """
         components.html(html, height=64)
 
-def build_validation_rows(verified_direct, verified_indirect):
-    all_ver = verified_direct + verified_indirect
-    all_ver.sort(key=lambda x: x["score"], reverse=True)
-    rows = []
-    for item in all_ver[:10]:
-        rows.append({
-            "URL": item["url"],
-            "Тип": "Точный" if item.get("competitor_type") == "direct" else "Косвенный",
-            "Статус": "OK",
-            "Релевантность": f"{item['score']}% ({item['relevance']})",
-            "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
-            "Комментарий": item.get("scale_comment", ""),
-        })
-    return rows
-
-def render_validation_table(verified_direct, verified_indirect):
-    rows = build_validation_rows(verified_direct, verified_indirect)
-    if not rows:
-        return
-    st.subheader("Топ-10 проверенных конкурентов")
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-
-# ============================================================
-# 12. ИНТЕРФЕЙС STREAMLIT
-# ============================================================
+# Основной UI
 domain = st.text_input("Введи домен (например, interiermsk.hotht.ru):")
 
 if "result" not in st.session_state:
@@ -1152,12 +1158,12 @@ if "rejected_competitors" not in st.session_state:
 if "last_domain" not in st.session_state:
     st.session_state.last_domain = ""
 
-# Основной анализ
-if st.button("Провести конкурентный анализ"):
-    if not domain:
-        st.warning("Введи домен")
-    else:
-        if not queue.is_active(user_id):
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    if st.button("Провести конкурентный анализ"):
+        if not domain:
+            st.warning("Введи домен")
+        elif not queue.is_active(user_id):
             if not queue.add(user_id):
                 st.warning("⏳ Ваш запрос добавлен в очередь. Подождите...")
                 progress_bar = st.progress(0)
@@ -1173,25 +1179,24 @@ if st.button("Провести конкурентный анализ"):
                     st.stop()
             else:
                 st.info("🔍 Начинаем анализ...")
-        with st.spinner("Анализирую..."):
-            try:
-                res, prof, dir_ver, ind_ver, rej = run_full_analysis(domain)
-                st.session_state.result = res
-                st.session_state.our_profile = prof
-                st.session_state.verified_direct_competitors = dir_ver
-                st.session_state.verified_indirect_competitors = ind_ver
-                st.session_state.rejected_competitors = rej
-                st.session_state.last_domain = domain
-            except Exception as e:
-                st.error(f"Ошибка: {e}")
-        queue.release()
-
-# Перепроверка (только Groq/Gemini)
-if st.button("Перепроверка (только Groq/Gemini)"):
-    if not domain:
-        st.warning("Введи домен")
-    else:
-        if not queue.is_active(user_id):
+            with st.spinner("Анализирую..."):
+                try:
+                    res, prof, dir_ver, ind_ver, rej = run_full_analysis(domain)
+                    st.session_state.result = res
+                    st.session_state.our_profile = prof
+                    st.session_state.verified_direct_competitors = dir_ver
+                    st.session_state.verified_indirect_competitors = ind_ver
+                    st.session_state.rejected_competitors = rej
+                    st.session_state.last_domain = domain
+                except Exception as e:
+                    st.error(f"Ошибка: {e}")
+                finally:
+                    queue.release()
+with col2:
+    if st.button("Перепроверка (только Groq/Gemini)"):
+        if not domain:
+            st.warning("Введи домен")
+        elif not queue.is_active(user_id):
             if not queue.add(user_id):
                 st.warning("⏳ Ваш запрос добавлен в очередь. Подождите...")
                 progress_bar = st.progress(0)
@@ -1207,47 +1212,36 @@ if st.button("Перепроверка (только Groq/Gemini)"):
                     st.stop()
             else:
                 st.info("🔍 Начинаем перепроверку...")
-        with st.spinner("Перепроверяю (линия 3)..."):
-            try:
-                prof = st.session_state.our_profile
-                if prof is None:
-                    st.error("Сначала проведите основной анализ")
-                else:
-                    dir_ver, ind_ver, rej = rerun_competitors_only(domain, prof)
+            with st.spinner("Перепроверяю..."):
+                try:
+                    dir_ver, ind_ver, rej = rerun_competitors_only(domain, st.session_state.our_profile or fetch_site_profile(domain))
                     st.session_state.verified_direct_competitors = dir_ver
                     st.session_state.verified_indirect_competitors = ind_ver
                     st.session_state.rejected_competitors = rej
-                    st.success("Перепроверка завершена")
-            except Exception as e:
-                st.error(f"Ошибка: {e}")
-        queue.release()
+                    st.success("Список конкурентов обновлён")
+                except Exception as e:
+                    st.error(f"Ошибка: {e}")
+                finally:
+                    queue.release()
+with col3:
+    imidj_url = st.text_input("URL для имиджа", key="imidj_input", placeholder="https://...")
+    if st.button("Проверить имиджевость"):
+        if imidj_url:
+            with st.spinner("Анализируем..."):
+                res = analyze_imidj(imidj_url)
+                st.subheader("Результат имиджевого анализа")
+                st.markdown(res)
+with col4:
+    audit_url = st.text_input("URL для 3 аудита", key="audit_input", placeholder="https://...")
+    if st.button("3 Аудит (отдельный пул)"):
+        if audit_url:
+            with st.spinner("Выполняем 3 аудит..."):
+                res = run_3_audit(audit_url)
+                st.subheader("Результат 3 аудита")
+                st.markdown(res)
 
-# Имиджевый анализ
-st.sidebar.header("Дополнительные проверки")
-imidj_url = st.sidebar.text_input("URL для имиджевого анализа", key="imidj_url")
-if st.sidebar.button("Проверить имиджевость"):
-    if imidj_url:
-        with st.spinner("Анализируем..."):
-            result = analyze_imidj(imidj_url)
-            st.sidebar.subheader("Результат имиджевого анализа")
-            st.sidebar.markdown(result)
-    else:
-        st.sidebar.warning("Введите URL")
-
-# 3 Аудит
-audit_url = st.sidebar.text_input("URL для 3 аудита", key="audit_url")
-if st.sidebar.button("3 Аудит (отдельный пул ключей)"):
-    if audit_url:
-        with st.spinner("Выполняем 3 аудит..."):
-            result = run_3_audit(audit_url)
-            st.sidebar.subheader("Результат 3 аудита")
-            st.sidebar.markdown(result)
-    else:
-        st.sidebar.warning("Введите URL")
-
-# Отображение результатов
 if st.session_state.result:
-    st.subheader("Результат анализа")
+    st.subheader("Результат конкурентного анализа")
     st.markdown(st.session_state.result, unsafe_allow_html=True)
     render_best_competitors(
         st.session_state.verified_direct_competitors,
