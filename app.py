@@ -65,6 +65,17 @@ GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]
 GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]]
 GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4]]
 
+# OpenRouter
+OPENROUTER_API_KEYS = [
+    "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",
+    "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",
+    "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",
+    "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",
+    "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",
+]
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "openai/gpt-4o-mini"
+
 JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
 JINA_READER_URL = "https://r.jina.ai/"
 
@@ -93,6 +104,17 @@ line_rr = {
     2: {"groq": RoundRobin(LINE_CONFIG[2]["groq"]), "gemini": RoundRobin(LINE_CONFIG[2]["gemini"])},
     3: {"groq": RoundRobin(LINE_CONFIG[3]["groq"]), "gemini": RoundRobin(LINE_CONFIG[3]["gemini"])},
 }
+
+_openrouter_lock = threading.Lock()
+_openrouter_idx = 0
+def get_next_openrouter_key():
+    global _openrouter_idx
+    if not OPENROUTER_API_KEYS:
+        return None
+    with _openrouter_lock:
+        key = OPENROUTER_API_KEYS[_openrouter_idx % len(OPENROUTER_API_KEYS)]
+        _openrouter_idx += 1
+        return key
 
 def get_exa_keys():
     return LINE_CONFIG[current_line]["exa"]
@@ -504,6 +526,34 @@ def call_gemini(messages, temperature=0.3, max_tokens=4096):
             if attempt == 0: continue
             else: raise
 
+def call_openrouter(messages, temperature=0.3, max_tokens=4096):
+    api_key = get_next_openrouter_key()
+    if not api_key:
+        raise Exception("Нет доступных ключей OpenRouter")
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://your-app.com",
+        "X-Title": "Competitor Analyzer"
+    }
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    try:
+        response = requests.post(OPENROUTER_API_URL, json=payload, headers=headers, timeout=90)
+        if response.status_code == 200:
+            data = response.json()
+            return data["choices"][0]["message"]
+        elif response.status_code == 429:
+            raise Exception("Rate limit")
+        else:
+            raise Exception(f"OpenRouter ошибка {response.status_code}: {response.text}")
+    except Exception as e:
+        raise Exception(f"OpenRouter вызов не удался: {e}")
+
 def call_llm_with_fallback(messages, use_tools=False, temperature=0.3, max_tokens=4096):
     if use_tools:
         try:
@@ -575,31 +625,6 @@ def search_exa(query: str, num_results: int = 15) -> list[str]:
         except: continue
     raise Exception("Все ключи Exa не сработали")
 
-def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
-    excluded = excluded_domains or set()
-    candidates = []
-    for attempt in range(2):
-        if competitor_type == "direct": query = f"similar to {domain}"
-        else: query = f"companies in related niches to {domain}"
-        try:
-            exa_urls = search_exa(query, num_results=40)
-            filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
-            if filtered: candidates.extend(filtered); break
-        except: pass
-        if attempt == 0:
-            query = f"{domain} competitors" if competitor_type == "direct" else f"{domain} similar businesses"
-            try:
-                exa_urls = search_exa(query, num_results=40)
-                filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
-                if filtered: candidates.extend(filtered); break
-            except: pass
-    if current_line != 3:
-        gemini_candidates = get_candidate_domains_gemini(domain, our_profile, competitor_type, excluded)
-        candidates.extend(gemini_candidates)
-    candidates = dedupe_urls(candidates)
-    candidates = exclude_domains(candidates, excluded)
-    return candidates[:30]
-
 def get_candidate_domains_gemini(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
     site_desc = summarize_profile(our_profile)
@@ -632,6 +657,64 @@ def get_candidate_domains_gemini(domain, our_profile, competitor_type, excluded_
                 except: pass
     return filtered[:10] if filtered else []
 
+def get_candidate_domains_openrouter(domain, our_profile, competitor_type, excluded_domains=None):
+    excluded = excluded_domains or set()
+    site_desc = summarize_profile(our_profile)
+    if competitor_type == "direct":
+        prompt = f"""Ты ищешь прямых конкурентов для сайта {domain}. Профиль нашего сайта:
+{site_desc}
+
+Найди не менее 15 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
+Верни только список корневых URL, по одному на строку, без пояснений. Если не знаешь точных URL, укажи реально существующие сайты, которые, по твоему мнению, являются прямыми конкурентами."""
+    else:
+        prompt = f"""Ты ищешь косвенных конкурентов для сайта {domain}. Профиль нашего сайта:
+{site_desc}
+
+Найди не менее 15 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
+Верни только список корневых URL, по одному на строку, без пояснений. Постарайся найти как можно больше реальных сайтов."""
+    try:
+        response = call_openrouter([{"role": "user", "content": prompt}], temperature=0.4, max_tokens=2500)
+        urls = extract_candidate_urls(response.get("content", ""))
+        filtered = exclude_domains(dedupe_urls(urls), excluded)
+        return filtered[:30]
+    except Exception as e:
+        st.warning(f"OpenRouter поиск не удался: {e}")
+        return []
+
+def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
+    excluded = excluded_domains or set()
+    candidates = []
+
+    # 1. Exa
+    for attempt in range(2):
+        if competitor_type == "direct": query = f"similar to {domain}"
+        else: query = f"companies in related niches to {domain}"
+        try:
+            exa_urls = search_exa(query, num_results=40)
+            filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
+            if filtered: candidates.extend(filtered); break
+        except: pass
+        if attempt == 0:
+            query = f"{domain} competitors" if competitor_type == "direct" else f"{domain} similar businesses"
+            try:
+                exa_urls = search_exa(query, num_results=40)
+                filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
+                if filtered: candidates.extend(filtered); break
+            except: pass
+
+    # 2. Gemini
+    if current_line != 3:
+        gemini_candidates = get_candidate_domains_gemini(domain, our_profile, competitor_type, excluded)
+        candidates.extend(gemini_candidates)
+
+    # 3. OpenRouter (всегда)
+    openrouter_candidates = get_candidate_domains_openrouter(domain, our_profile, competitor_type, excluded)
+    candidates.extend(openrouter_candidates)
+
+    candidates = dedupe_urls(candidates)
+    candidates = exclude_domains(candidates, excluded)
+    return candidates[:30]
+
 def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
     site_desc = summarize_profile(our_profile)
@@ -647,6 +730,16 @@ def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_dom
 
 Найди не менее 10 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
 Верни только список корневых URL, по одному на строку, без пояснений. Постарайся найти как можно больше реальных сайтов."""
+    # Пробуем OpenRouter сначала
+    try:
+        response = call_openrouter([{"role":"user","content":prompt}], temperature=0.4, max_tokens=2500)
+        urls = extract_candidate_urls(response.get("content",""))
+        filtered = exclude_domains(dedupe_urls(urls), excluded)
+        if len(filtered) >= 5: return filtered[:20]
+    except Exception as e:
+        st.warning(f"OpenRouter попытка не удалась: {e}")
+
+    # Затем fallback
     for attempt in range(2):
         try:
             response = call_llm_with_fallback([{"role":"user","content":prompt}], use_tools=False, temperature=0.3, max_tokens=2000)
@@ -708,14 +801,12 @@ def verify_competitors(our_profile, candidate_urls, target_type, our_region=None
         if is_blocked_domain(domain): return ("reject", {"url": url, "reason": "Маркетплейс/агрегатор", "type": target_type})
         candidate_profile = fetch_site_profile(url)
         if not candidate_profile.get("ok"): return ("reject", {"url": url, "reason": f"Недоступен: {candidate_profile.get('issue','ошибка')}", "type": target_type})
-        # Регион
         candidate_region = extract_region(candidate_profile)
         our_wide = our_region.lower() in ["россия","рф","вся россия","по всей стране"]
         cand_wide = candidate_region.lower() in ["россия","рф","вся россия","по всей стране"]
         if not our_wide and not cand_wide and our_region.lower() != candidate_region.lower():
             if our_region.lower() != "неизвестно" and candidate_region.lower() != "неизвестно":
                 return ("reject", {"url": candidate_profile["final_url"], "reason": f"Несовпадение региона: наш ({our_region}) vs кандидат ({candidate_region})", "type": target_type})
-        # Ключевые слова
         our_keywords_set = set(our_profile.get("keywords",[]))
         candidate_keywords_set = set(candidate_profile.get("keywords",[]))
         if not (our_keywords_set & candidate_keywords_set): return ("reject", {"url": candidate_profile["final_url"], "reason": "Нет общих ключевых слов", "type": target_type})
