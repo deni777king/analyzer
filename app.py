@@ -17,9 +17,9 @@ from bs4 import BeautifulSoup
 st.set_page_config(page_title="Конкурентный Анализатор | 3 Аудит", layout="wide")
 st.title("Конкурентный Анализатор")
 
-# ========== 1. НАСТРОЙКА КЛЮЧЕЙ (НОВЫЕ ИЗ ТЗ) ==========
+# ========== 1. НАСТРОЙКА КЛЮЧЕЙ ==========
 
-# --- Mistral (4+3 ключа) ---
+# Mistral (4+3 ключа)
 MISTRAL_KEYS_LINE1 = [
     "uiJLmg6FTBoccElFrCbhV06PDmLPPVuH",
     "NHXvVYh8il4ydpG40zdAr2FypP0PdrOH",
@@ -32,7 +32,7 @@ MISTRAL_KEYS_LINE2 = [
     "xDTZtoJp68uT9Qqsr5PveZMNmqczalwa",
 ]
 
-# --- Exa (4+3 ключа) ---
+# Exa (4+3 ключа)
 EXA_KEYS_LINE1 = [
     "6641c418-b339-4a60-9015-cfe635a8dee0",
     "9963984d-6b17-4bbc-8c8b-8c9c1eaeb5a2",
@@ -45,7 +45,7 @@ EXA_KEYS_LINE2 = [
     "1f664dc7-e278-40ed-a4e6-58397d0dfbee",
 ]
 
-# --- Groq (6 ключей) ---
+# Groq (6 ключей)
 GROQ_KEYS_ALL = [
     "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",
     "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",
@@ -58,7 +58,7 @@ GROQ_KEYS_LINE1 = [GROQ_KEYS_ALL[0]]
 GROQ_KEYS_LINE2 = [GROQ_KEYS_ALL[1], GROQ_KEYS_ALL[2]]
 GROQ_KEYS_LINE3 = [GROQ_KEYS_ALL[3], GROQ_KEYS_ALL[4], GROQ_KEYS_ALL[5]]
 
-# --- Gemini (5 ключей) ---
+# Gemini (5 ключей)
 GEMINI_KEYS_ALL = [
     "AIzaSyCIUNviKfWReJZXSx0lmGhZwLR_3oq0mv0",
     "AIzaSyBELdB8pwTRGAHpThWyPhIo8Y55bR34u74",
@@ -70,30 +70,18 @@ GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]
 GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]]
 GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4]]
 
-# --- Jina для 3 Аудита ---
+# Jina для 3 Аудита
 JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
 JINA_READER_URL = "https://r.jina.ai/"
 
-# --- Настройки линий ---
+# Настройки линий
 LINE_CONFIG = {
-    1: {
-        "mistral": MISTRAL_KEYS_LINE1,
-        "exa": EXA_KEYS_LINE1,
-        "groq": GROQ_KEYS_LINE1,
-        "gemini": GEMINI_KEYS_LINE1,
-    },
-    2: {
-        "mistral": MISTRAL_KEYS_LINE2,
-        "exa": EXA_KEYS_LINE2,
-        "groq": GROQ_KEYS_LINE2,
-        "gemini": GEMINI_KEYS_LINE2,
-    },
-    3: {
-        "mistral": [],
-        "exa": [],
-        "groq": GROQ_KEYS_LINE3,
-        "gemini": GEMINI_KEYS_LINE3,
-    }
+    1: {"mistral": MISTRAL_KEYS_LINE1, "exa": EXA_KEYS_LINE1,
+        "groq": GROQ_KEYS_LINE1, "gemini": GEMINI_KEYS_LINE1},
+    2: {"mistral": MISTRAL_KEYS_LINE2, "exa": EXA_KEYS_LINE2,
+        "groq": GROQ_KEYS_LINE2, "gemini": GEMINI_KEYS_LINE2},
+    3: {"mistral": [], "exa": [],
+        "groq": GROQ_KEYS_LINE3, "gemini": GEMINI_KEYS_LINE3}
 }
 
 class RoundRobin:
@@ -135,7 +123,7 @@ def switch_line():
         st.error("❌ Все линии исчерпаны. Проверьте API-ключи.")
         return False
 
-# ========== 2. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ПОЛЬЗОВАТЕЛЕЙ ==========
+# ========== 2. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ==========
 class UserQueue:
     def __init__(self):
         self.queue = deque()
@@ -172,10 +160,7 @@ queue = st.session_state.user_queue
 # ========== 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 
 REQUEST_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
 }
 MARKETPLACE_BLOCKLIST = {
@@ -202,12 +187,7 @@ def build_url_variants(value: str) -> list[str]:
     raw = raw.replace("http://", "").replace("https://", "")
     raw = raw.replace("www.", "")
     domain = raw.split("/", 1)[0]
-    variants = [
-        f"https://{domain}",
-        f"https://www.{domain}",
-        f"http://{domain}",
-        f"http://www.{domain}",
-    ]
+    variants = [f"https://{domain}", f"https://www.{domain}", f"http://{domain}", f"http://www.{domain}"]
     return list(dict.fromkeys(variants))
 
 def normalize_root_url(value: str) -> str:
@@ -228,8 +208,7 @@ def get_domain_key(value: str) -> str:
     return netloc
 
 def clean_text(text: str) -> str:
-    text = re.sub(r"\s+", " ", text or "")
-    return text.strip()
+    return re.sub(r"\s+", " ", text or "").strip()
 
 def count_internal_links(soup: BeautifulSoup, domain: str) -> int:
     count = 0
@@ -247,11 +226,7 @@ def tokenize(text: str) -> list[str]:
     tokens = re.findall(r"[a-zа-я][a-zа-я0-9\-]{1,}", prepared)
     result = []
     for token in tokens:
-        if token in STOPWORDS:
-            continue
-        if token.isdigit():
-            continue
-        if len(token) <= 2:
+        if token in STOPWORDS or token.isdigit() or len(token) <= 2:
             continue
         result.append(token)
     return result
@@ -268,9 +243,9 @@ def cosine_similarity(counter_a: Counter, counter_b: Counter) -> float:
     if not counter_a or not counter_b:
         return 0.0
     shared = set(counter_a) & set(counter_b)
-    numerator = sum(counter_a[token] * counter_b[token] for token in shared)
-    norm_a = math.sqrt(sum(v * v for v in counter_a.values()))
-    norm_b = math.sqrt(sum(v * v for v in counter_b.values()))
+    numerator = sum(counter_a[t] * counter_b[t] for t in shared)
+    norm_a = math.sqrt(sum(v*v for v in counter_a.values()))
+    norm_b = math.sqrt(sum(v*v for v in counter_b.values()))
     if not norm_a or not norm_b:
         return 0.0
     return numerator / (norm_a * norm_b)
@@ -286,12 +261,12 @@ def compare_profiles(our_profile: dict, candidate_profile: dict) -> dict:
     our_head = set(tokenize(" ".join([
         our_profile.get("title", ""),
         our_profile.get("description", ""),
-        " ".join(our_profile.get("headings", [])),
+        " ".join(our_profile.get("headings", []))
     ])))
     candidate_head = set(tokenize(" ".join([
         candidate_profile.get("title", ""),
         candidate_profile.get("description", ""),
-        " ".join(candidate_profile.get("headings", [])),
+        " ".join(candidate_profile.get("headings", []))
     ])))
 
     body_cosine = cosine_similarity(our_counter, candidate_counter)
@@ -324,22 +299,13 @@ def compare_profiles(our_profile: dict, candidate_profile: dict) -> dict:
     elif scale_score < 0.45:
         scale_comment = "масштаб отличается"
 
-    reason = (
-        f"Совпавшие ключи: {', '.join(shared_keywords[:6])}."
-        if shared_keywords
-        else "Мало совпадающих тематических терминов."
-    )
+    reason = (f"Совпавшие ключи: {', '.join(shared_keywords[:6])}." if shared_keywords else "Мало совпадающих тематических терминов.")
 
     return {
-        "score": final_score,
-        "relevance": relevance,
-        "body_cosine": round(body_cosine, 3),
-        "keyword_overlap": round(keyword_overlap, 3),
-        "header_overlap": round(header_overlap, 3),
-        "scale_score": round(scale_score, 3),
-        "scale_comment": scale_comment,
-        "shared_keywords": shared_keywords,
-        "reason": reason,
+        "score": final_score, "relevance": relevance,
+        "body_cosine": round(body_cosine, 3), "keyword_overlap": round(keyword_overlap, 3),
+        "header_overlap": round(header_overlap, 3), "scale_score": round(scale_score, 3),
+        "scale_comment": scale_comment, "shared_keywords": shared_keywords, "reason": reason,
     }
 
 def classify_competitor(comparison: dict) -> str | None:
@@ -376,17 +342,13 @@ def summarize_profile(profile: dict) -> str:
 def extract_candidate_urls(text: str) -> list[str]:
     if not text:
         return []
-    pattern = re.compile(
-        r"(?:https?://)?(?:www\.)?[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+(?:/[a-zA-Z0-9_./?=&%-]*)?"
-    )
+    pattern = re.compile(r"(?:https?://)?(?:www\.)?[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+(?:/[a-zA-Z0-9_./?=&%-]*)?")
     candidates = []
     seen = set()
     for raw in pattern.findall(text):
         url = normalize_root_url(raw)
         domain = get_domain_key(url)
-        if "." not in domain:
-            continue
-        if domain in seen:
+        if "." not in domain or domain in seen:
             continue
         seen.add(domain)
         candidates.append(url)
@@ -425,13 +387,10 @@ def fetch_site_profile(url_or_domain: str) -> dict:
     for candidate in variants:
         try:
             response = requests.get(candidate, headers=REQUEST_HEADERS, timeout=15, allow_redirects=True)
-            status_code = response.status_code
-            content_type = response.headers.get("Content-Type", "")
-
-            if status_code >= 400:
-                last_error = f"HTTP {status_code}"
+            if response.status_code >= 400:
+                last_error = f"HTTP {response.status_code}"
                 continue
-
+            content_type = response.headers.get("Content-Type", "")
             if "html" not in content_type and "text" not in content_type:
                 last_error = f"Неподдерживаемый Content-Type: {content_type}"
                 continue
@@ -442,20 +401,10 @@ def fetch_site_profile(url_or_domain: str) -> dict:
                 tag.decompose()
 
             title = clean_text(soup.title.get_text(" ", strip=True) if soup.title else "")
-            description = clean_text(
-                (
-                    soup.find("meta", attrs={"name": "description"})
-                    or soup.find("meta", attrs={"property": "og:description"})
-                    or {}
-                ).get("content", "")
-            )
-            headings = [
-                clean_text(tag.get_text(" ", strip=True))
-                for tag in soup.find_all(["h1", "h2"], limit=8)
-                if clean_text(tag.get_text(" ", strip=True))
-            ]
-            text = clean_text(soup.get_text(" ", strip=True))
-            text = text[:15000]
+            description = clean_text((soup.find("meta", attrs={"name": "description"}) or
+                                      soup.find("meta", attrs={"property": "og:description"}) or {}).get("content", ""))
+            headings = [clean_text(tag.get_text(" ", strip=True)) for tag in soup.find_all(["h1", "h2"], limit=8) if clean_text(tag.get_text(" ", strip=True))]
+            text = clean_text(soup.get_text(" ", strip=True))[:15000]
             final_url = response.url
             final_domain = get_domain_key(final_url)
             internal_links = count_internal_links(soup, final_domain)
@@ -464,88 +413,47 @@ def fetch_site_profile(url_or_domain: str) -> dict:
                 last_error = "Сайт почти пустой"
                 continue
 
-            weighted_text = " ".join(
-                [title] * 6 + [description] * 5 + headings * 3 + [text]
-            )
+            weighted_text = " ".join([title] * 6 + [description] * 5 + headings * 3 + [text])
             token_counter = Counter(tokenize(weighted_text))
             keywords = [token for token, _ in token_counter.most_common(25)]
 
             return {
-                "ok": True,
-                "live": True,
-                "requested_url": candidate,
-                "final_url": normalize_root_url(final_url),
-                "domain": final_domain,
-                "title": title,
-                "description": description,
-                "headings": headings[:5],
-                "text": text,
-                "snippet": text[:1500],
-                "status_code": status_code,
-                "internal_links": internal_links,
-                "text_length": len(text),
-                "keywords": keywords,
-                "token_counter": dict(token_counter),
-                "issue": "",
+                "ok": True, "live": True, "requested_url": candidate, "final_url": normalize_root_url(final_url),
+                "domain": final_domain, "title": title, "description": description, "headings": headings[:5],
+                "text": text, "snippet": text[:1500], "status_code": response.status_code,
+                "internal_links": internal_links, "text_length": len(text), "keywords": keywords,
+                "token_counter": dict(token_counter), "issue": "",
             }
         except Exception as exc:
             last_error = str(exc)
 
     return {
-        "ok": False,
-        "live": False,
-        "requested_url": normalize_root_url(url_or_domain),
-        "final_url": normalize_root_url(url_or_domain),
-        "domain": get_domain_key(url_or_domain),
-        "title": "",
-        "description": "",
-        "headings": [],
-        "text": "",
-        "snippet": "",
-        "status_code": None,
-        "internal_links": 0,
-        "text_length": 0,
-        "keywords": [],
-        "token_counter": {},
-        "issue": last_error,
+        "ok": False, "live": False, "requested_url": normalize_root_url(url_or_domain),
+        "final_url": normalize_root_url(url_or_domain), "domain": get_domain_key(url_or_domain),
+        "title": "", "description": "", "headings": [], "text": "", "snippet": "", "status_code": None,
+        "internal_links": 0, "text_length": 0, "keywords": [], "token_counter": {}, "issue": last_error,
     }
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def browse_page(url: str) -> str:
     profile = fetch_site_profile(url)
     payload = {
-        "live": profile["live"],
-        "url": profile["final_url"],
-        "domain": profile["domain"],
-        "title": profile["title"],
-        "description": profile["description"],
-        "headings": profile["headings"],
-        "keywords": profile["keywords"][:12],
-        "snippet": profile["snippet"],
-        "issue": profile["issue"],
+        "live": profile["live"], "url": profile["final_url"], "domain": profile["domain"],
+        "title": profile["title"], "description": profile["description"], "headings": profile["headings"],
+        "keywords": profile["keywords"][:12], "snippet": profile["snippet"], "issue": profile["issue"],
     }
     return json.dumps(payload, ensure_ascii=False)
 
 # ========== 5. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM ==========
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "browse_page",
-            "description": (
-                "Проверить сайт по URL и вернуть краткий профиль страницы: живая ли она, тема, заголовок, "
-                "описание, ключевые слова и краткий фрагмент текста."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"url": {"type": "string"}},
-                "required": ["url"],
-            },
-        },
-    }
-]
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "browse_page",
+        "description": "Проверить сайт по URL и вернуть краткий профиль страницы: живая ли она, тема, заголовок, описание, ключевые слова и краткий фрагмент текста.",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+    },
+}]
 
-# Промты
 SITE_SUMMARY_PROMPT = """
 Ты аналитик сайтов. Ниже профиль нашего сайта:
 {site_summary}
@@ -618,7 +526,6 @@ MESSENGER_RECOMMEND_PROMPT = """
 - ...
 """
 
-# Адаптеры для LLM
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
@@ -630,12 +537,7 @@ def call_mistral(messages, use_tools=False, temperature=0.3, max_tokens=4096):
     for api_key in keys:
         try:
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "model": "mistral-small-latest",
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
+            payload = {"model": "mistral-small-latest", "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
             if use_tools:
                 payload["tools"] = tools
             response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
@@ -643,9 +545,7 @@ def call_mistral(messages, use_tools=False, temperature=0.3, max_tokens=4096):
                 return response.json()["choices"][0]["message"]
             elif response.status_code == 429:
                 raise Exception("Rate limit")
-            else:
-                continue
-        except Exception as e:
+        except Exception:
             continue
     raise Exception("Все ключи Mistral в текущей линии не сработали")
 
@@ -655,12 +555,7 @@ def call_groq(messages, temperature=0.3, max_tokens=4096):
     if not api_key:
         raise Exception("Нет доступных ключей Groq в текущей линии")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
+    payload = {"model": "llama-3.3-70b-versatile", "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
     if response.status_code == 200:
         return response.json()["choices"][0]["message"]
@@ -679,13 +574,7 @@ def call_gemini(messages, temperature=0.3, max_tokens=4096):
         role = "model" if msg["role"] == "assistant" else msg["role"]
         contents.append({"role": role, "parts": [{"text": msg["content"]}]})
     url = f"{GEMINI_API_URL}?key={api_key}"
-    payload = {
-        "contents": contents,
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        },
-    }
+    payload = {"contents": contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}}
     response = requests.post(url, json=payload, timeout=90)
     if response.status_code == 200:
         data = response.json()
@@ -701,34 +590,23 @@ def call_llm_with_fallback(messages, use_tools=False, temperature=0.3, max_token
         try:
             return call_mistral(messages, use_tools=True, temperature=temperature, max_tokens=max_tokens)
         except Exception as e:
-            if "Rate limit" in str(e):
-                if switch_line():
-                    return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
-                else:
-                    raise
+            if "Rate limit" in str(e) and switch_line():
+                return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
             raise
     else:
-        providers = [
-            ("Mistral", call_mistral),
-            ("Gemini", call_gemini),
-            ("Groq", call_groq),
-        ]
+        providers = [("Mistral", call_mistral), ("Gemini", call_gemini), ("Groq", call_groq)]
         for name, func in providers:
             try:
                 return func(messages, temperature=temperature, max_tokens=max_tokens)
             except Exception as e:
-                if "Rate limit" in str(e) or "429" in str(e):
-                    if switch_line():
-                        return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
-                    else:
-                        continue
+                if "Rate limit" in str(e) and switch_line():
+                    return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
                 continue
         raise Exception("Все провайдеры не смогли обработать запрос")
 
 def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
     conversation = list(messages)
-    max_rounds = 12
-    for _ in range(max_rounds):
+    for _ in range(12):
         try:
             msg = call_llm_with_fallback(conversation, use_tools=True, temperature=temperature, max_tokens=max_tokens)
         except Exception as e:
@@ -756,22 +634,16 @@ def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
                 conversation.append(r)
     return "Не удалось завершить обработку tool calls."
 
-# ========== 6. ПОИСК КОНКУРЕНТОВ (С ГАРАНТИЕЙ 5+ URL) ==========
+# ========== 6. ПОИСК КОНКУРЕНТОВ ==========
 def search_exa(query: str, num_results: int = 15) -> list[str]:
     keys = get_exa_keys()
     if not keys:
         return []
     for api_key in keys:
         try:
-            url = "https://api.exa.ai/search"
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "query": query,
-                "type": "neural",
-                "numResults": num_results,
-                "contents": {"text": False}
-            }
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            payload = {"query": query, "type": "neural", "numResults": num_results, "contents": {"text": False}}
+            response = requests.post("https://api.exa.ai/search", json=payload, headers=headers, timeout=30)
             if response.status_code == 200:
                 data = response.json()
                 urls = [normalize_root_url(r["url"]) for r in data.get("results", [])]
@@ -784,45 +656,79 @@ def search_exa(query: str, num_results: int = 15) -> list[str]:
 
 def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
-    for attempt in range(2):  # две попытки с разными запросами
+    candidates = []
+    # Exa
+    for attempt in range(2):
         if competitor_type == "direct":
             query = f"similar to {domain}"
-            exa_urls = search_exa(query, num_results=30)
+            exa_urls = search_exa(query, num_results=40)
         else:
             query = f"companies in related niches to {domain}"
-            exa_urls = search_exa(query, num_results=30)
+            exa_urls = search_exa(query, num_results=40)
         filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
-        if len(filtered) >= 5:
-            return filtered[:15]
-        # Вторая попытка – более широкий запрос
+        if filtered:
+            candidates.extend(filtered)
+            break
         if attempt == 0:
             query = f"{domain} competitors" if competitor_type == "direct" else f"{domain} similar businesses"
-            exa_urls = search_exa(query, num_results=30)
+            exa_urls = search_exa(query, num_results=40)
             filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
-            if len(filtered) >= 5:
-                return filtered[:15]
-    # Если всё равно мало, возвращаем то, что есть (но не пустой)
-    return filtered[:10] if filtered else []
+            if filtered:
+                candidates.extend(filtered)
+                break
+    # Gemini (если линия не 3)
+    if current_line != 3:
+        gemini_candidates = get_candidate_domains_gemini(domain, our_profile, competitor_type, excluded)
+        candidates.extend(gemini_candidates)
+    candidates = dedupe_urls(candidates)
+    candidates = exclude_domains(candidates, excluded)
+    return candidates[:30]
 
-def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_domains=None):
+def get_candidate_domains_gemini(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
     site_desc = summarize_profile(our_profile)
-    # Усиленный промт с требованием минимум 10 URL
     if competitor_type == "direct":
         prompt = f"""
 Ты ищешь прямых конкурентов для сайта {domain}. Профиль нашего сайта:
 {site_desc}
 
-Найди не менее 10 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
-Верни только список корневых URL, по одному на строку, без пояснений. Если не знаешь точных URL, укажи реально существующие сайты, которые, по твоему мнению, являются прямыми конкурентами.
+Найди не менее 15 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
+Верни только список корневых URL, по одному на строку, без пояснений.
 """
     else:
         prompt = f"""
 Ты ищешь косвенных конкурентов для сайта {domain}. Профиль нашего сайта:
 {site_desc}
 
-Найди не менее 10 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
-Верни только список корневых URL, по одному на строку, без пояснений. Постарайся найти как можно больше реальных сайтов.
+Найди не менее 15 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
+Верни только список корневых URL, по одному на строку, без пояснений.
+"""
+    try:
+        response = call_gemini([{"role": "user", "content": prompt}], temperature=0.3, max_tokens=2000)
+        urls = extract_candidate_urls(response.get("content", ""))
+        return exclude_domains(dedupe_urls(urls), excluded)
+    except Exception as e:
+        st.warning(f"Gemini поиск не удался: {e}")
+        return []
+
+def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_domains=None):
+    excluded = excluded_domains or set()
+    site_desc = summarize_profile(our_profile)
+    if competitor_type == "direct":
+        prompt = f"""
+Ты ищешь прямых конкурентов для сайта {domain}. Профиль нашего сайта:
+{site_desc}
+
+Найди не менее 15 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
+Верни только список корневых URL, по одному на строку, без пояснений.
+"""
+    else:
+        prompt = f"""
+Ты ищешь косвенных конкурентов для сайта {domain}. Профиль нашего сайта:
+{site_desc}
+
+Найди не менее 15 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
+Верни только список корневых URL, по одному на строку, без пояснений.
 """
     for attempt in range(2):
         try:
@@ -848,14 +754,13 @@ def extract_region(profile: dict) -> str:
 """
     try:
         response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0, max_tokens=50)
-        region = response.get("content", "").strip()
-        return region
+        return response.get("content", "").strip()
     except Exception as e:
         st.warning(f"Ошибка определения региона: {e}")
         return "неизвестно"
 
-# ========== 8. ПРОВЕРКА КОНКУРЕНТОВ (С ПРИНУДИТЕЛЬНЫМ ЗАЧИСЛЕНИЕМ) ==========
-def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
+# ========== 8. ПРОВЕРКА КОНКУРЕНТОВ ==========
+def is_relevant_competitor_groq(our_profile: dict, candidate_profile: dict) -> bool:
     our_summary = summarize_profile(our_profile)
     candidate_summary = summarize_profile(candidate_profile)
     prompt = f"""
@@ -868,11 +773,11 @@ def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
 Вопрос: Является ли сайт-кандидат прямым или косвенным конкурентом для нашего сайта? Ответь только "да" или "нет".
 """
     try:
-        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0, max_tokens=10)
+        response = call_groq([{"role": "user", "content": prompt}], temperature=0, max_tokens=10)
         answer = response.get("content", "").strip().lower()
         return "да" in answer and "нет" not in answer
     except Exception as e:
-        st.warning(f"Ошибка LLM при проверке релевантности: {e}")
+        st.warning(f"Ошибка Groq при проверке релевантности: {e}")
         return True
 
 def verify_competitors(our_profile, candidate_urls, target_type, our_region=None):
@@ -918,12 +823,11 @@ def verify_competitors(our_profile, candidate_urls, target_type, our_region=None
         if comparison["score"] < 10:
             return ("reject", {"url": candidate_profile["final_url"], "reason": f"Низкая оценка сходства ({comparison['score']}%)", "type": target_type})
 
-        if not is_relevant_competitor(our_profile, candidate_profile):
-            return ("reject", {"url": candidate_profile["final_url"], "reason": "Не является релевантным конкурентом по оценке LLM", "type": target_type})
+        # Дополнительная проверка через Groq
+        if not is_relevant_competitor_groq(our_profile, candidate_profile):
+            return ("reject", {"url": candidate_profile["final_url"], "reason": "Не является релевантным конкурентом по оценке Groq", "type": target_type})
 
         actual_type = classify_competitor(comparison)
-
-        # ПРИНУДИТЕЛЬНОЕ ЗАЧИСЛЕНИЕ при высоком score
         if target_type == "direct" and actual_type != "direct" and comparison["score"] >= 35 and comparison["shared_keywords"]:
             actual_type = "direct"
 
@@ -986,15 +890,9 @@ def recommend_messengers_platforms(our_profile, verified_direct, verified_indire
     comp_summary = "\n".join([
         f"- {c['url']} (сходство {c['score']}%)\n  Ключевые слова: {', '.join(c['shared_keywords'][:5])}"
         for c in competitors if c.get("shared_keywords")
-    ])
-    if not comp_summary:
-        comp_summary = "Нет данных о конкурентах."
+    ]) or "Нет данных о конкурентах."
     our_summary = summarize_profile(our_profile)
-    prompt = MESSENGER_RECOMMEND_PROMPT.format(
-        our_summary=our_summary,
-        competitors_summary=comp_summary,
-        region=region
-    )
+    prompt = MESSENGER_RECOMMEND_PROMPT.format(our_summary=our_summary, competitors_summary=comp_summary, region=region)
     try:
         response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=800)
         return response.get("content", "")
@@ -1007,11 +905,8 @@ def build_final_report(our_profile, site_outline, verified_direct, verified_indi
     vi_json = json.dumps(verified_indirect[:10], ensure_ascii=False, indent=2)
     rj_json = json.dumps(rejected[:20], ensure_ascii=False, indent=2)
     prompt = FINAL_REPORT_PROMPT.format(
-        site_summary=summarize_profile(our_profile),
-        site_outline=site_outline or "Нет черновика",
-        verified_direct_json=vd_json,
-        verified_indirect_json=vi_json,
-        rejected_json=rj_json,
+        site_summary=summarize_profile(our_profile), site_outline=site_outline or "Нет черновика",
+        verified_direct_json=vd_json, verified_indirect_json=vi_json, rejected_json=rj_json,
     )
     full_report = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.25, max_tokens=3000).get("content", "")
     if messengers_platforms:
@@ -1040,13 +935,20 @@ def run_full_analysis(domain):
     rej = dir_rej + ind_rej
     ind_ver, rej = ensure_min_indirect(domain, our, dir_ver, ind_ver, rej)
 
-    st.info(f"✅ После проверки: прямых конкурентов — {len(dir_ver)}, косвенных — {len(ind_ver)}")
+    total_wanted = 15
+    direct_needed = min(total_wanted // 2, len(dir_ver))
+    indirect_needed = total_wanted - direct_needed
+    dir_final = dir_ver[:direct_needed]
+    ind_final = ind_ver[:indirect_needed]
+    if len(dir_final) < direct_needed and len(ind_final) < len(ind_ver):
+        extra = min(direct_needed - len(dir_final), len(ind_ver) - len(ind_final))
+        ind_final = ind_ver[:len(ind_final)+extra]
 
-    dir_ver = dir_ver[:10]
-    ind_ver = ind_ver[:10]
-    messengers_platforms = recommend_messengers_platforms(our, dir_ver, ind_ver, region)
-    report = build_final_report(our, outline, dir_ver, ind_ver, rej, region, messengers_platforms)
-    return report, our, dir_ver, ind_ver, rej
+    st.info(f"✅ После проверки: прямых конкурентов — {len(dir_final)}, косвенных — {len(ind_final)} (всего {len(dir_final)+len(ind_final)})")
+
+    messengers_platforms = recommend_messengers_platforms(our, dir_final, ind_final, region)
+    report = build_final_report(our, outline, dir_final, ind_final, rej, region, messengers_platforms)
+    return report, our, dir_final, ind_final, rej
 
 def rerun_competitors_only(domain, our_profile):
     global current_line
@@ -1056,7 +958,6 @@ def rerun_competitors_only(domain, our_profile):
         region = extract_region(our_profile)
         dir_cand = get_candidate_domains_llm(domain, our_profile, "direct")
         ind_cand = get_candidate_domains_llm(domain, our_profile, "indirect")
-
         st.info(f"🔍 (перепроверка) Найдено кандидатов: прямых — {len(dir_cand)}, косвенных — {len(ind_cand)}")
 
         dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct", region)
@@ -1066,9 +967,17 @@ def rerun_competitors_only(domain, our_profile):
         rej = dir_rej + ind_rej
         ind_ver, rej = ensure_min_indirect(domain, our_profile, dir_ver, ind_ver, rej)
 
-        st.info(f"✅ (перепроверка) После проверки: прямых конкурентов — {len(dir_ver)}, косвенных — {len(ind_ver)}")
+        total_wanted = 15
+        direct_needed = min(total_wanted // 2, len(dir_ver))
+        indirect_needed = total_wanted - direct_needed
+        dir_final = dir_ver[:direct_needed]
+        ind_final = ind_ver[:indirect_needed]
+        if len(dir_final) < direct_needed and len(ind_final) < len(ind_ver):
+            extra = min(direct_needed - len(dir_final), len(ind_ver) - len(ind_final))
+            ind_final = ind_ver[:len(ind_final)+extra]
 
-        return dir_ver[:10], ind_ver[:10], rej
+        st.info(f"✅ (перепроверка) После проверки: прямых конкурентов — {len(dir_final)}, косвенных — {len(ind_final)} (всего {len(dir_final)+len(ind_final)})")
+        return dir_final[:10], ind_final[:10], rej
     finally:
         current_line = saved_line
 
@@ -1113,12 +1022,7 @@ def audit_call_groq(messages, temperature=0.3, max_tokens=4096):
     if not api_key:
         raise Exception("Нет ключей Groq для аудита")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
+    payload = {"model": "llama-3.3-70b-versatile", "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
     if response.status_code == 200:
         return response.json()["choices"][0]["message"]
@@ -1134,13 +1038,7 @@ def audit_call_gemini(messages, temperature=0.3, max_tokens=4096):
         role = "model" if msg["role"] == "assistant" else msg["role"]
         contents.append({"role": role, "parts": [{"text": msg["content"]}]})
     url = f"{GEMINI_API_URL}?key={api_key}"
-    payload = {
-        "contents": contents,
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        },
-    }
+    payload = {"contents": contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}}
     response = requests.post(url, json=payload, timeout=90)
     if response.status_code == 200:
         data = response.json()
@@ -1171,14 +1069,7 @@ def fetch_site_for_audit(url: str) -> dict:
             description = desc_match.group(1) if desc_match else ""
             text = re.sub(r'[#*`_\[\]\(\)]', ' ', markdown)
             text = clean_text(text)
-            return {
-                "ok": True,
-                "url": url,
-                "title": title,
-                "description": description,
-                "content": text[:8000],
-                "error": None
-            }
+            return {"ok": True, "url": url, "title": title, "description": description, "content": text[:8000], "error": None}
     except Exception as e:
         return {"ok": False, "url": url, "error": str(e)}
     return {"ok": False, "url": url, "error": "Не удалось загрузить"}
@@ -1232,10 +1123,8 @@ def build_validation_rows(verified_direct, verified_indirect):
     rows = []
     for item in all_ver[:10]:
         rows.append({
-            "URL": item["url"],
-            "Тип": "Точный" if item.get("competitor_type") == "direct" else "Косвенный",
-            "Статус": "OK",
-            "Релевантность": f"{item['score']}% ({item['relevance']})",
+            "URL": item["url"], "Тип": "Точный" if item.get("competitor_type") == "direct" else "Косвенный",
+            "Статус": "OK", "Релевантность": f"{item['score']}% ({item['relevance']})",
             "Совпадения": ", ".join(item.get("shared_keywords", [])[:5]) or "—",
             "Комментарий": item.get("scale_comment", ""),
         })
