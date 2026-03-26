@@ -7,7 +7,6 @@ import random
 import concurrent.futures
 from collections import Counter, deque
 from urllib.parse import urlparse
-from datetime import datetime
 
 import requests
 import streamlit as st
@@ -18,31 +17,8 @@ st.set_page_config(page_title="Конкурентный Анализатор | 3
 st.title("Конкурентный Анализатор")
 
 # ========== 1. НАСТРОЙКА КЛЮЧЕЙ ==========
-MISTRAL_KEYS_LINE1 = [
-    "uiJLmg6FTBoccElFrCbhV06PDmLPPVuH",
-    "NHXvVYh8il4ydpG40zdAr2FypP0PdrOH",
-    "AJtcbBOBYlJrpKiAZJDwb71Al5mLExbN",
-    "F4BTL3sgx49XPfmBGJxW4vnTp4cw1il9",
-]
-MISTRAL_KEYS_LINE2 = [
-    "Wb0bIlL8TDWdT3iAxEDHE2Dx6fgZRoNG",
-    "es65iDRkC1U4a85AxNFceecJBQYZGHqn",
-    "xDTZtoJp68uT9Qqsr5PveZMNmqczalwa",
-]
-
-EXA_KEYS_LINE1 = [
-    "6641c418-b339-4a60-9015-cfe635a8dee0",
-    "9963984d-6b17-4bbc-8c8b-8c9c1eaeb5a2",
-    "52864684-c02c-4263-a00c-f7200a199841",
-    "473e4118-05cf-43a4-b21c-29d833390442",
-]
-EXA_KEYS_LINE2 = [
-    "a69ce51c-b823-4c5f-95d9-3d9bc80ec0c7",
-    "c07e3f67-95ec-4248-ba88-71023190b971",
-    "1f664dc7-e278-40ed-a4e6-58397d0dfbee",
-]
-
-GROQ_KEYS_ALL = [
+# Все 6 ключей Groq
+ALL_GROQ_KEYS = [
     "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",
     "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",
     "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",
@@ -50,66 +26,50 @@ GROQ_KEYS_ALL = [
     "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",
     "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",
 ]
-GROQ_KEYS_LINE1 = [GROQ_KEYS_ALL[0]]
-GROQ_KEYS_LINE2 = [GROQ_KEYS_ALL[1], GROQ_KEYS_ALL[2]]
-GROQ_KEYS_LINE3 = [GROQ_KEYS_ALL[3], GROQ_KEYS_ALL[4], GROQ_KEYS_ALL[5]]
 
-GEMINI_KEYS_ALL = [
-    "AIzaSyCIUNviKfWReJZXSx0lmGhZwLR_3oq0mv0",
-    "AIzaSyBELdB8pwTRGAHpThWyPhIo8Y55bR34u74",
-    "AIzaSyCVris8gA-EoRXojE1eWvP1GJGK6uebgCk",
-    "AIzaSyAJP67w_9Z5xmSDVwcE_2L5Rz-v4ktRJSo",
-    "AIzaSyDdjbQ47TUjsbUigDgctHUnSJ-BrXvvvkQ",
-]
-GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]
-GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]]
-GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4]]
+# Распределение ключей по группам
+KEYS_MAIN = ALL_GROQ_KEYS[0:2]      # ключи 0,1 – основной анализ и перепроверка
+KEYS_IMIDJ = [ALL_GROQ_KEYS[2]]     # ключ 2 – имиджевый анализ
+KEYS_AUDIT = ALL_GROQ_KEYS[3:5]     # ключи 3,4 – 3 аудит
+KEYS_BACKUP = [ALL_GROQ_KEYS[5]]    # ключ 5 – резерв для всех групп
 
-JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
-JINA_READER_URL = "https://r.jina.ai/"
+# Резервные ключи для каждой группы (по одному)
+BACKUP_MAIN = KEYS_BACKUP
+BACKUP_IMIDJ = KEYS_BACKUP
+BACKUP_AUDIT = KEYS_BACKUP
 
-LINE_CONFIG = {
-    1: {"mistral": MISTRAL_KEYS_LINE1, "exa": EXA_KEYS_LINE1, "groq": GROQ_KEYS_LINE1, "gemini": GEMINI_KEYS_LINE1},
-    2: {"mistral": MISTRAL_KEYS_LINE2, "exa": EXA_KEYS_LINE2, "groq": GROQ_KEYS_LINE2, "gemini": GEMINI_KEYS_LINE2},
-    3: {"mistral": [], "exa": [], "groq": GROQ_KEYS_LINE3, "gemini": GEMINI_KEYS_LINE3}
-}
-
+# Потокобезопасные роутеры
 class RoundRobin:
-    def __init__(self, keys):
+    def __init__(self, keys, backup_keys=None):
         self.keys = keys
+        self.backup_keys = backup_keys or []
         self.lock = threading.Lock()
         self.idx = 0
+        self.backup_used = False
     def get(self):
-        if not self.keys:
-            return None
         with self.lock:
-            k = self.keys[self.idx % len(self.keys)]
+            if self.backup_used and self.backup_keys:
+                # используем резервный
+                key = self.backup_keys[0]
+                self.backup_used = False
+                return key
+            if not self.keys:
+                if self.backup_keys:
+                    return self.backup_keys[0]
+                return None
+            key = self.keys[self.idx % len(self.keys)]
             self.idx += 1
-            return k
+            return key
+    def use_backup(self):
+        with self.lock:
+            self.backup_used = True
 
-current_line = 1
-line_rr = {
-    1: {"groq": RoundRobin(LINE_CONFIG[1]["groq"]), "gemini": RoundRobin(LINE_CONFIG[1]["gemini"])},
-    2: {"groq": RoundRobin(LINE_CONFIG[2]["groq"]), "gemini": RoundRobin(LINE_CONFIG[2]["gemini"])},
-    3: {"groq": RoundRobin(LINE_CONFIG[3]["groq"]), "gemini": RoundRobin(LINE_CONFIG[3]["gemini"])},
-}
+# Создаём роутеры
+rr_main = RoundRobin(KEYS_MAIN, BACKUP_MAIN)
+rr_imidj = RoundRobin(KEYS_IMIDJ, BACKUP_IMIDJ)
+rr_audit = RoundRobin(KEYS_AUDIT, BACKUP_AUDIT)
 
-def get_exa_keys():
-    return LINE_CONFIG[current_line]["exa"]
-def get_mistral_keys():
-    return LINE_CONFIG[current_line]["mistral"]
-
-def switch_line():
-    global current_line
-    if current_line < 3:
-        current_line += 1
-        st.warning(f"⚠️ Переключение на линию {current_line} из-за ошибок/лимитов")
-        return True
-    else:
-        st.error("❌ Все линии исчерпаны. Проверьте API-ключи.")
-        return False
-
-# ========== 2. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ==========
+# ========== 2. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ПОЛЬЗОВАТЕЛЕЙ ==========
 class UserQueue:
     def __init__(self):
         self.queue = deque()
@@ -321,7 +281,7 @@ def exclude_domains(urls: list[str], excluded_domains: set[str]) -> list[str]:
             result.append(url)
     return result
 
-# ========== 4. ЗАГРУЗКА ПРОФИЛЕЙ ==========
+# ========== 4. ЗАГРУЗКА ПРОФИЛЕЙ САЙТОВ ==========
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_site_profile(url_or_domain: str) -> dict:
     variants = build_url_variants(url_or_domain)
@@ -369,20 +329,42 @@ def fetch_site_profile(url_or_domain: str) -> dict:
         "token_counter": {}, "issue": last_error
     }
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def browse_page(url: str) -> str:
-    profile = fetch_site_profile(url)
-    payload = {
-        "live": profile["live"], "url": profile["final_url"], "domain": profile["domain"],
-        "title": profile["title"], "description": profile["description"], "headings": profile["headings"],
-        "keywords": profile["keywords"][:12], "snippet": profile["snippet"], "issue": profile["issue"]
-    }
-    return json.dumps(payload, ensure_ascii=False)
+# ========== 5. ФУНКЦИИ ДЛЯ РАБОТЫ С GROQ ==========
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
-# ========== 5. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM ==========
-tools = [{"type":"function","function":{"name":"browse_page","description":"Проверить сайт по URL и вернуть краткий профиль страницы: живая ли она, тема, заголовок, описание, ключевые слова и краткий фрагмент текста.","parameters":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}}}]
+def call_groq(messages, temperature=0.3, max_tokens=4096, router=None):
+    """Универсальный вызов Groq с указанием роутера."""
+    if router is None:
+        router = rr_main
+    api_key = router.get()
+    if not api_key:
+        raise Exception("Нет доступных ключей Groq")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {"model": GROQ_MODEL, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    try:
+        response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
+        if response.status_code == 200:
+            return response.json()["choices"][0]["message"]
+        elif response.status_code == 429:
+            # Лимит, используем резервный ключ
+            router.use_backup()
+            # Повторяем с резервным
+            api_key = router.get()
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+                response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
+                if response.status_code == 200:
+                    return response.json()["choices"][0]["message"]
+            raise Exception("Превышен лимит и нет резервного ключа")
+        else:
+            raise Exception(f"Groq ошибка {response.status_code}: {response.text}")
+    except Exception as e:
+        raise Exception(f"Groq ошибка: {e}")
 
-SITE_SUMMARY_PROMPT = """Ты аналитик сайтов. Ниже профиль нашего сайта:
+# ========== 6. ПРОМТЫ ==========
+SITE_SUMMARY_PROMPT = """
+Ты аналитик сайтов. Ниже профиль нашего сайта:
 {site_summary}
 Проанализируй сайт и дай краткую оценку по пунктам:
 1. Коммерческий или некоммерческий? (если есть противоречия, укажи)
@@ -390,17 +372,25 @@ SITE_SUMMARY_PROMPT = """Ты аналитик сайтов. Ниже профи
 3. По всей стране или локально?
 4. Топ-10 ключевых слов (только коммерческие, без региона, приоритет средне- и низкочастотным)
 6. Мессенджеры и площадки для рекламы
-Отвечай кратко, строго по структуре."""
+Отвечай кратко, строго по структуре.
+"""
 
-DIRECT_CANDIDATE_PROMPT = """Ты ищешь кандидатов в ТОЧНЫЕ (прямые) конкуренты для сайта {domain}.
+DIRECT_CANDIDATE_PROMPT = """
+Ты ищешь кандидатов в ТОЧНЫЕ (прямые) конкуренты для сайта {domain}.
 Профиль нашего сайта: {site_summary}
-Правила: используй browse_page для каждого кандидата, исключай маркетплейсы, стремись к минимум 5. Верни только список корневых URL."""
+Найди не менее 15 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
+Верни только список корневых URL, по одному на строку, без пояснений.
+"""
 
-INDIRECT_CANDIDATE_PROMPT = """Ты ищешь кандидатов в КОСВЕННЫЕ конкуренты для сайта {domain}.
+INDIRECT_CANDIDATE_PROMPT = """
+Ты ищешь кандидатов в КОСВЕННЫЕ конкуренты для сайта {domain}.
 Профиль нашего сайта: {site_summary}
-Правила: используй browse_page, исключай прямых конкурентов и маркетплейсы, стремись к минимум 5. Верни только список корневых URL."""
+Найди не менее 15 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
+Верни только список корневых URL, по одному на строку, без пояснений.
+"""
 
-FINAL_REPORT_PROMPT = """Ты аналитик сайтов. Используй только данные ниже и не выдумывай новые сайты.
+FINAL_REPORT_PROMPT = """
+Ты аналитик сайтов. Используй только данные ниже и не выдумывай новые сайты.
 
 Профиль нашего сайта: {site_summary}
 Черновик анализа: {site_outline}
@@ -419,9 +409,11 @@ FINAL_REPORT_PROMPT = """Ты аналитик сайтов. Используй 
 1.8 Коммерческий или некоммерческий?
 1.9 Противоречия / отсутствие данных
 
-Не добавляй лишнего. Если информации недостаточно – укажи. Ответ оформляй в виде списка с явными номерами пунктов."""
+Не добавляй лишнего. Если информации недостаточно – укажи. Ответ оформляй в виде списка с явными номерами пунктов.
+"""
 
-MESSENGER_RECOMMEND_PROMPT = """Ты аналитик по маркетингу. На основе данных о сайте и его конкурентах определи, какие мессенджеры и площадки лучше всего подойдут для привлечения клиентов.
+MESSENGER_RECOMMEND_PROMPT = """
+Ты аналитик по маркетингу. На основе данных о сайте и его конкурентах определи, какие мессенджеры и площадки лучше всего подойдут для привлечения клиентов.
 
 Данные о нашем сайте:
 {our_summary}
@@ -442,223 +434,84 @@ MESSENGER_RECOMMEND_PROMPT = """Ты аналитик по маркетингу.
 - ...
 Площадки (с процентами):
 - Название: %
-- ..."""
+- ...
+"""
 
-MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+IMIDGE_PROMPT = """
+Ты аналитик сайтов. Проверь сайт по URL и определи, относится ли он к "имиджевым клиентам".
 
-def call_mistral(messages, use_tools=False, temperature=0.3, max_tokens=4096):
-    keys = get_mistral_keys()
-    if not keys: raise Exception("Нет доступных ключей Mistral")
-    for api_key in keys:
-        try:
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {"model": "mistral-small-latest", "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-            if use_tools: payload["tools"] = tools
-            response = requests.post(MISTRAL_API_URL, json=payload, headers=headers, timeout=90)
-            if response.status_code == 200: return response.json()["choices"][0]["message"]
-            elif response.status_code == 429: raise Exception("Rate limit")
-        except: continue
-    raise Exception("Все ключи Mistral не сработали")
+Критерии имиджевого клиента:
+- Муниципальные учреждения (школы, детсады, больницы, поликлиники, администрации, дома культуры, библиотеки)
+- Известные городские компании (крупные медцентры, известные строительные компании, популярные сети, предприятия с историей)
+- Иностранные компании (зарубежные бренды, представительства)
+- Публичные личности (артисты, актёры, певцы, художники, писатели, эксперты, медийные лица)
 
-def call_groq(messages, temperature=0.3, max_tokens=4096):
-    rr = line_rr[current_line]["groq"]
-    api_key = rr.get()
-    if not api_key: raise Exception("Нет доступных ключей Groq")
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"model": "llama-3.3-70b-versatile", "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
-    if response.status_code == 200: return response.json()["choices"][0]["message"]
-    elif response.status_code == 429: raise Exception("Rate limit")
-    else: raise Exception(f"Groq ошибка {response.status_code}")
+НЕ считаются имиджевыми:
+- клиент крупный только по бюджету
+- частный бизнес без известности
+- подрядчик при госучреждении
+- сомнительная известность
 
-def call_gemini(messages, temperature=0.3, max_tokens=4096):
-    rr = line_rr[current_line]["gemini"]
-    api_key = rr.get()
-    if not api_key: raise Exception("Нет доступных ключей Gemini")
-    contents = []
-    for msg in messages:
-        role = "model" if msg["role"] == "assistant" else msg["role"]
-        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-    payload = {"contents": contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}}
-    # Пробуем сначала gemini-1.5-flash
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-    for attempt in range(2):
-        try:
-            response = requests.post(f"{url}?key={api_key}", json=payload, timeout=90)
-            if response.status_code == 200:
-                data = response.json()
-                return {"role": "assistant", "content": data["candidates"][0]["content"]["parts"][0]["text"]}
-            elif response.status_code == 404:
-                # пробуем gemini-2.0-flash-exp
-                alt_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
-                response = requests.post(f"{alt_url}?key={api_key}", json=payload, timeout=90)
-                if response.status_code == 200:
-                    data = response.json()
-                    return {"role": "assistant", "content": data["candidates"][0]["content"]["parts"][0]["text"]}
-                else:
-                    raise Exception(f"Gemini ошибка {response.status_code}")
-            else:
-                raise Exception(f"Gemini ошибка {response.status_code}")
-        except Exception as e:
-            if attempt == 0: continue
-            else: raise
+Проанализируй сайт и дай ответ строго в формате:
+Имиджевый клиент: Да/Нет
+Пояснение: (1-2 предложения)
+"""
 
-def call_llm_with_fallback(messages, use_tools=False, temperature=0.3, max_tokens=4096):
-    if use_tools:
-        try:
-            return call_mistral(messages, use_tools=True, temperature=temperature, max_tokens=max_tokens)
-        except Exception as e:
-            if "Rate limit" in str(e):
-                if switch_line(): return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
-                else: raise
-            raise
-    else:
-        providers = [("Mistral", call_mistral), ("Gemini", call_gemini), ("Groq", call_groq)]
-        last_error = None
-        for name, func in providers:
-            try:
-                return func(messages, temperature=temperature, max_tokens=max_tokens)
-            except Exception as e:
-                last_error = f"{name}: {e}"
-                if "Rate limit" in str(e) or "429" in str(e):
-                    if switch_line(): return call_llm_with_fallback(messages, use_tools, temperature, max_tokens)
-                continue
-        # Последняя попытка без переключения
-        for name, func in providers:
-            try:
-                return func(messages, temperature=temperature, max_tokens=max_tokens)
-            except: continue
-        raise Exception(f"Все провайдеры не смогли обработать запрос. Последняя ошибка: {last_error}")
+AUDIT_3_PROMPT = """
+Твоя задача — проанализировать сайт по указанному URL.
 
-def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
-    conversation = list(messages)
-    for _ in range(12):
-        try:
-            msg = call_llm_with_fallback(conversation, use_tools=True, temperature=temperature, max_tokens=max_tokens)
-        except Exception as e:
-            st.error(f"Ошибка вызова LLM с tools: {e}")
-            raise
-        conversation.append(msg)
-        tool_calls = msg.get("tool_calls") or []
-        if not tool_calls: return msg.get("content","")
-        def process(tc):
-            func = tc.get("function",{})
-            if func.get("name") != "browse_page": return None
-            try:
-                args = json.loads(func.get("arguments","{}"))
-                url = args.get("url","")
-                content = browse_page(url) if url else json.dumps({"error":"Пустой URL"}, ensure_ascii=False)
-            except Exception as e:
-                content = json.dumps({"error":str(e)}, ensure_ascii=False)
-            return {"role":"tool","tool_call_id":tc["id"],"name":"browse_page","content":content}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-            results = list(ex.map(process, tool_calls))
-        for r in results:
-            if r: conversation.append(r)
-    return "Не удалось завершить обработку tool calls."
+Перейди по URL и изучи сайт:
+- основные услуги / продукты
+- позиционирование и ключевые формулировки
+- контакты, тексты, первый экран
+- упоминания города, региона или зоны работы
 
-# ========== 6. ПОИСК КОНКУРЕНТОВ ==========
-def search_exa(query: str, num_results: int = 15) -> list[str]:
-    keys = get_exa_keys()
-    if not keys: return []
-    for api_key in keys:
-        try:
-            url = "https://api.exa.ai/search"
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {"query": query, "type": "neural", "numResults": num_results, "contents": {"text": False}}
-            response = requests.post(url, json=payload, headers=headers, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                return dedupe_urls([normalize_root_url(r["url"]) for r in data.get("results", [])])
-            elif response.status_code == 429: continue
-        except: continue
-    raise Exception("Все ключи Exa не сработали")
+Определи:
+- тематику сайта (ниша, тип бизнеса)
+- регион работы (город / регион / вся Россия). Если регион не указан явно — сделай наиболее вероятное предположение и пометь это как допущение.
 
-def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
-    excluded = excluded_domains or set()
-    candidates = []
-    for attempt in range(2):
-        if competitor_type == "direct": query = f"similar to {domain}"
-        else: query = f"companies in related niches to {domain}"
-        try:
-            exa_urls = search_exa(query, num_results=40)
-            filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
-            if filtered: candidates.extend(filtered); break
-        except: pass
-        if attempt == 0:
-            query = f"{domain} competitors" if competitor_type == "direct" else f"{domain} similar businesses"
-            try:
-                exa_urls = search_exa(query, num_results=40)
-                filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
-                if filtered: candidates.extend(filtered); break
-            except: pass
-    if current_line != 3:
-        gemini_candidates = get_candidate_domains_gemini(domain, our_profile, competitor_type, excluded)
-        candidates.extend(gemini_candidates)
-    candidates = dedupe_urls(candidates)
-    candidates = exclude_domains(candidates, excluded)
-    return candidates[:30]
+Оцени потенциал целевых поисковых запросов по данной нише:
+- укажи диапазон в месяц (минимум–максимум)
+- используй экспертную оценку, а не точные данные
+- не ссылайся на Wordstat или конкретные сервисы
+- не используй формулировки «по данным», «согласно статистике»
 
-def get_candidate_domains_gemini(domain, our_profile, competitor_type, excluded_domains=None):
-    excluded = excluded_domains or set()
-    site_desc = summarize_profile(our_profile)
-    if competitor_type == "direct":
-        prompt = f"""Ты ищешь прямых конкурентов для сайта {domain}. Профиль нашего сайта:
-{site_desc}
+Рассчитай потенциальное количество обращений:
+- возьми НИЖНЮЮ границу диапазона запросов
+- рассчитай 3% и 5% от этого значения
+- укажи диапазон обращений в месяц
 
-Найди не менее 15 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
-Верни только список корневых URL, по одному на строку, без пояснений."""
-    else:
-        prompt = f"""Ты ищешь косвенных конкурентов для сайта {domain}. Профиль нашего сайта:
-{site_desc}
+Верни результат СТРОГО в следующем формате, без лишних комментариев:
+URL: {url}
+Тематика сайта:
+Регион работы:
+Потенциал целевых поисковых запросов в месяц:
+Потенциальные обращения (3–5% от нижней границы):
+Краткое пояснение (1–2 предложения)
+"""
 
-Найди не менее 15 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
-Верни только список корневых URL, по одному на строку, без пояснений."""
-    for attempt in range(2):
-        try:
-            response = call_gemini([{"role":"user","content":prompt}], temperature=0.3, max_tokens=2000)
-            urls = extract_candidate_urls(response.get("content",""))
-            filtered = exclude_domains(dedupe_urls(urls), excluded)
-            if len(filtered) >= 5: return filtered[:20]
-        except Exception as e:
-            st.warning(f"Gemini попытка {attempt+1} не удалась: {e}")
-            if attempt == 0:
-                try:
-                    response = call_llm_with_fallback([{"role":"user","content":prompt}], use_tools=False, temperature=0.3, max_tokens=2000)
-                    urls = extract_candidate_urls(response.get("content",""))
-                    filtered = exclude_domains(dedupe_urls(urls), excluded)
-                    if len(filtered) >= 5: return filtered[:20]
-                except: pass
-    return filtered[:10] if filtered else []
+# ========== 7. ОСНОВНЫЕ ФУНКЦИИ ==========
+def get_site_outline(our_profile):
+    prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
+    response = call_groq([{"role":"user","content":prompt}], temperature=0.2, max_tokens=1200, router=rr_main)
+    return response.get("content","")
 
 def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
     site_desc = summarize_profile(our_profile)
     if competitor_type == "direct":
-        prompt = f"""Ты ищешь прямых конкурентов для сайта {domain}. Профиль нашего сайта:
-{site_desc}
-
-Найди не менее 10 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
-Верни только список корневых URL, по одному на строку, без пояснений. Если не знаешь точных URL, укажи реально существующие сайты, которые, по твоему мнению, являются прямыми конкурентами."""
+        prompt = DIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=site_desc)
     else:
-        prompt = f"""Ты ищешь косвенных конкурентов для сайта {domain}. Профиль нашего сайта:
-{site_desc}
+        prompt = INDIRECT_CANDIDATE_PROMPT.format(domain=domain, site_summary=site_desc)
+    try:
+        response = call_groq([{"role":"user","content":prompt}], temperature=0.3, max_tokens=2000, router=rr_main)
+        urls = extract_candidate_urls(response.get("content",""))
+        filtered = exclude_domains(dedupe_urls(urls), excluded)
+        return filtered[:20]
+    except Exception as e:
+        st.warning(f"Ошибка поиска кандидатов: {e}")
+        return []
 
-Найди не менее 10 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
-Верни только список корневых URL, по одному на строку, без пояснений. Постарайся найти как можно больше реальных сайтов."""
-    for attempt in range(2):
-        try:
-            response = call_llm_with_fallback([{"role":"user","content":prompt}], use_tools=False, temperature=0.3, max_tokens=2000)
-            urls = extract_candidate_urls(response.get("content",""))
-            filtered = exclude_domains(dedupe_urls(urls), excluded)
-            if len(filtered) >= 5: return filtered[:20]
-        except Exception as e:
-            st.warning(f"LLM попытка {attempt+1} не удалась: {e}")
-    return filtered[:10] if filtered else []
-
-# ========== 7. РЕГИОН И ПРОВЕРКА КОНКУРЕНТОВ ==========
-@st.cache_data(ttl=3600)
 def extract_region(profile: dict) -> str:
     prompt = f"""Профиль сайта:
 {summarize_profile(profile)}
@@ -667,7 +520,7 @@ def extract_region(profile: dict) -> str:
 Если регион не указан явно, сделай предположение на основе контактов, текстов, упоминаний.
 Верни только название региона (например: "Москва", "Россия", "Казахстан", "Санкт-Петербург")."""
     try:
-        response = call_llm_with_fallback([{"role":"user","content":prompt}], use_tools=False, temperature=0, max_tokens=50)
+        response = call_groq([{"role":"user","content":prompt}], temperature=0, max_tokens=50, router=rr_main)
         return response.get("content","").strip()
     except Exception as e:
         st.warning(f"Ошибка определения региона: {e}")
@@ -684,7 +537,7 @@ def is_relevant_competitor_groq(our_profile: dict, candidate_profile: dict) -> b
 
 Вопрос: Является ли сайт-кандидат прямым или косвенным конкурентом для нашего сайта? Ответь только "да" или "нет"."""
     try:
-        response = call_groq([{"role":"user","content":prompt}], temperature=0, max_tokens=10)
+        response = call_groq([{"role":"user","content":prompt}], temperature=0, max_tokens=10, router=rr_main)
         answer = response.get("content","").strip().lower()
         return "да" in answer and "нет" not in answer
     except Exception as e:
@@ -750,12 +603,6 @@ def verify_competitors(our_profile, candidate_urls, target_type, our_region=None
     verified.sort(key=lambda x: x["score"], reverse=True)
     return verified, rejected
 
-# ========== 8. ОСНОВНЫЕ ФУНКЦИИ АНАЛИЗА ==========
-def get_site_outline(our_profile):
-    prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
-    response = call_llm_with_fallback([{"role":"user","content":prompt}], use_tools=False, temperature=0.2, max_tokens=1200)
-    return response.get("content","")
-
 def ensure_min_indirect(domain, our_profile, direct_verified, indirect_verified, rejected):
     total_needed = 15
     current_total = len(direct_verified) + len(indirect_verified)
@@ -785,14 +632,12 @@ def recommend_messengers_platforms(our_profile, verified_direct, verified_indire
     if not comp_summary: comp_summary = "Нет данных о конкурентах."
     our_summary = summarize_profile(our_profile)
     prompt = MESSENGER_RECOMMEND_PROMPT.format(our_summary=our_summary, competitors_summary=comp_summary, region=region)
-    for provider in ["call_groq","call_gemini","call_mistral"]:
-        try:
-            if provider == "call_groq": response = call_groq([{"role":"user","content":prompt}], temperature=0.2, max_tokens=800)
-            elif provider == "call_gemini": response = call_gemini([{"role":"user","content":prompt}], temperature=0.2, max_tokens=800)
-            else: response = call_mistral([{"role":"user","content":prompt}], use_tools=False, temperature=0.2, max_tokens=800)
-            return response.get("content","")
-        except Exception as e: continue
-    return "Рекомендации не удалось сформировать."
+    try:
+        response = call_groq([{"role":"user","content":prompt}], temperature=0.2, max_tokens=800, router=rr_main)
+        return response.get("content","")
+    except Exception as e:
+        st.warning(f"Ошибка рекомендаций: {e}")
+        return "Рекомендации не удалось сформировать."
 
 def build_final_report(our_profile, site_outline, verified_direct, verified_indirect, rejected, region, messengers_platforms):
     vd_json = json.dumps(verified_direct[:10], ensure_ascii=False, indent=2)
@@ -805,7 +650,7 @@ def build_final_report(our_profile, site_outline, verified_direct, verified_indi
         verified_indirect_json=vi_json,
         rejected_json=rj_json,
     )
-    full_report = call_llm_with_fallback([{"role":"user","content":prompt}], use_tools=False, temperature=0.25, max_tokens=3000).get("content","")
+    full_report = call_groq([{"role":"user","content":prompt}], temperature=0.25, max_tokens=3000, router=rr_main).get("content","")
     if messengers_platforms:
         full_report = re.sub(r"(1\.4.*?)(\n\n1\.5)", r"\1\n\nРекомендованные мессенджеры и площадки:\n" + messengers_platforms + r"\n\n\2", full_report, flags=re.DOTALL)
     return full_report
@@ -815,8 +660,8 @@ def run_full_analysis(domain):
     if not our.get("ok"): raise RuntimeError(f"Не удалось открыть наш сайт: {our.get('issue','ошибка')}")
     region = extract_region(our)
     outline = get_site_outline(our)
-    dir_cand = get_candidate_domains(domain, our, "direct")
-    ind_cand = get_candidate_domains(domain, our, "indirect")
+    dir_cand = get_candidate_domains_llm(domain, our, "direct")
+    ind_cand = get_candidate_domains_llm(domain, our, "indirect")
     st.info(f"🔍 Найдено кандидатов: прямых — {len(dir_cand)}, косвенных — {len(ind_cand)}")
     if not dir_cand and not ind_cand: raise RuntimeError("Не удалось получить кандидатов")
     dir_ver, dir_rej = verify_competitors(our, dir_cand, "direct", region)
@@ -839,151 +684,52 @@ def run_full_analysis(domain):
     return report, our, dir_final, ind_final, rej
 
 def rerun_competitors_only(domain, our_profile):
-    global current_line
-    saved_line = current_line
-    current_line = 3
-    try:
-        region = extract_region(our_profile)
-        dir_cand = get_candidate_domains_llm(domain, our_profile, "direct")
-        ind_cand = get_candidate_domains_llm(domain, our_profile, "indirect")
-        st.info(f"🔍 (перепроверка) Найдено кандидатов: прямых — {len(dir_cand)}, косвенных — {len(ind_cand)}")
-        dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct", region)
-        dir_doms = {d["domain"] for d in dir_ver}
-        ind_cand = exclude_domains(ind_cand, dir_doms)
-        ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect", region)
-        rej = dir_rej + ind_rej
-        ind_ver, rej = ensure_min_indirect(domain, our_profile, dir_ver, ind_ver, rej)
-        total_wanted = 15
-        direct_needed = min(total_wanted // 2, len(dir_ver))
-        indirect_needed = total_wanted - direct_needed
-        dir_final = dir_ver[:direct_needed]
-        ind_final = ind_ver[:indirect_needed]
-        if len(dir_final) < direct_needed and len(ind_final) < len(ind_ver):
-            extra = min(direct_needed - len(dir_final), len(ind_ver) - len(ind_final))
-            ind_final = ind_ver[:len(ind_final)+extra]
-        st.info(f"✅ (перепроверка) После проверки: прямых конкурентов — {len(dir_final)}, косвенных — {len(ind_final)} (всего {len(dir_final)+len(ind_final)})")
-        return dir_final[:10], ind_final[:10], rej
-    finally:
-        current_line = saved_line
+    # используем тот же роутер rr_main для перепроверки
+    region = extract_region(our_profile)
+    dir_cand = get_candidate_domains_llm(domain, our_profile, "direct")
+    ind_cand = get_candidate_domains_llm(domain, our_profile, "indirect")
+    st.info(f"🔍 (перепроверка) Найдено кандидатов: прямых — {len(dir_cand)}, косвенных — {len(ind_cand)}")
+    dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct", region)
+    dir_doms = {d["domain"] for d in dir_ver}
+    ind_cand = exclude_domains(ind_cand, dir_doms)
+    ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect", region)
+    rej = dir_rej + ind_rej
+    ind_ver, rej = ensure_min_indirect(domain, our_profile, dir_ver, ind_ver, rej)
+    total_wanted = 15
+    direct_needed = min(total_wanted // 2, len(dir_ver))
+    indirect_needed = total_wanted - direct_needed
+    dir_final = dir_ver[:direct_needed]
+    ind_final = ind_ver[:indirect_needed]
+    if len(dir_final) < direct_needed and len(ind_final) < len(ind_ver):
+        extra = min(direct_needed - len(dir_final), len(ind_ver) - len(ind_final))
+        ind_final = ind_ver[:len(ind_final)+extra]
+    st.info(f"✅ (перепроверка) После проверки: прямых конкурентов — {len(dir_final)}, косвенных — {len(ind_final)} (всего {len(dir_final)+len(ind_final)})")
+    return dir_final[:10], ind_final[:10], rej
 
-# ========== 9. ИМИДЖЕВЫЙ АНАЛИЗ ==========
-IMIDGE_PROMPT = """Ты аналитик сайтов. Проверь сайт по URL и определи, относится ли он к "имиджевым клиентам".
-
-Критерии имиджевого клиента:
-- Муниципальные учреждения (школы, детсады, больницы, поликлиники, администрации, дома культуры, библиотеки)
-- Известные городские компании (крупные медцентры, известные строительные компании, популярные сети, предприятия с историей)
-- Иностранные компании (зарубежные бренды, представительства)
-- Публичные личности (артисты, актёры, певцы, художники, писатели, эксперты, медийные лица)
-
-НЕ считаются имиджевыми:
-- клиент крупный только по бюджету
-- частный бизнес без известности
-- подрядчик при госучреждении
-- сомнительная известность
-
-Проанализируй сайт и дай ответ строго в формате:
-Имиджевый клиент: Да/Нет
-Пояснение: (1-2 предложения)"""
-
+# ========== 8. ИМИДЖЕВЫЙ АНАЛИЗ ==========
 def analyze_imidj(url: str) -> str:
     profile = fetch_site_profile(url)
     if not profile.get("ok"): return f"Не удалось загрузить сайт: {profile.get('issue')}"
     summary = summarize_profile(profile)
     prompt = f"URL: {profile['final_url']}\n{IMIDGE_PROMPT}\nПрофиль сайта:\n{summary}"
-    response = call_llm_with_fallback([{"role":"user","content":prompt}], use_tools=False, temperature=0.2, max_tokens=300)
+    response = call_groq([{"role":"user","content":prompt}], temperature=0.2, max_tokens=300, router=rr_imidj)
     return response.get("content","Ошибка анализа")
 
-# ========== 10. 3 АУДИТ ==========
-AUDIT_GROQ_KEYS = [GROQ_KEYS_ALL[0], GROQ_KEYS_ALL[1]]
-AUDIT_GEMINI_KEYS = [GEMINI_KEYS_ALL[0], GEMINI_KEYS_ALL[1]]
-audit_groq_rr = RoundRobin(AUDIT_GROQ_KEYS)
-audit_gemini_rr = RoundRobin(AUDIT_GEMINI_KEYS)
-
-def audit_call_groq(messages, temperature=0.3, max_tokens=4096):
-    api_key = audit_groq_rr.get()
-    if not api_key: raise Exception("Нет ключей Groq для аудита")
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"model": "llama-3.3-70b-versatile", "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
-    if response.status_code == 200: return response.json()["choices"][0]["message"]
-    else: raise Exception(f"Ошибка Groq аудит: {response.status_code}")
-
-def audit_call_gemini(messages, temperature=0.3, max_tokens=4096):
-    api_key = audit_gemini_rr.get()
-    if not api_key: raise Exception("Нет ключей Gemini для аудита")
-    contents = []
-    for msg in messages:
-        role = "model" if msg["role"] == "assistant" else msg["role"]
-        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-    payload = {"contents": contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}}
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-    response = requests.post(f"{url}?key={api_key}", json=payload, timeout=90)
-    if response.status_code == 200:
-        data = response.json()
-        return {"role": "assistant", "content": data["candidates"][0]["content"]["parts"][0]["text"]}
-    else: raise Exception(f"Ошибка Gemini аудит: {response.status_code}")
-
-def audit_call_with_fallback(messages, temperature=0.3, max_tokens=4096):
-    try: return audit_call_groq(messages, temperature, max_tokens)
-    except: return audit_call_gemini(messages, temperature, max_tokens)
-
+# ========== 9. 3 АУДИТ ==========
 def fetch_site_for_audit(url: str) -> dict:
-    try:
-        jina_url = JINA_READER_URL + url
-        headers = {"Authorization": f"Bearer {JINA_3AUDIT_KEY}"}
-        response = requests.get(jina_url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            markdown = response.text
-            title_match = re.search(r'# (.*?)\n', markdown)
-            title = title_match.group(1) if title_match else ""
-            desc_match = re.search(r'description: (.*?)\n', markdown)
-            description = desc_match.group(1) if desc_match else ""
-            text = re.sub(r'[#*`_\[\]\(\)]', ' ', markdown)
-            text = clean_text(text)
-            return {"ok": True, "url": url, "title": title, "description": description, "content": text[:8000], "error": None}
-    except Exception as e: return {"ok": False, "url": url, "error": str(e)}
-    return {"ok": False, "url": url, "error": "Не удалось загрузить"}
+    # для 3 аудита используем тот же fetch_site_profile, он не требует Jina
+    return fetch_site_profile(url)
 
 def run_3_audit(url: str) -> str:
     profile = fetch_site_for_audit(url)
-    if not profile.get("ok"): return f"❌ Не удалось загрузить сайт: {profile.get('error')}"
-    prompt = f"""Твоя задача — проанализировать сайт по указанному URL.
-
-Перейди по URL и изучи сайт:
-- основные услуги / продукты
-- позиционирование и ключевые формулировки
-- контакты, тексты, первый экран
-- упоминания города, региона или зоны работы
-
-Определи:
-- тематику сайта (ниша, тип бизнеса)
-- регион работы (город / регион / вся Россия). Если регион не указан явно — сделай наиболее вероятное предположение и пометь это как допущение.
-
-Оцени потенциал целевых поисковых запросов по данной нише:
-- укажи диапазон в месяц (минимум–максимум)
-- используй экспертную оценку, а не точные данные
-- не ссылайся на Wordstat или конкретные сервисы
-- не используй формулировки «по данным», «согласно статистике»
-
-Рассчитай потенциальное количество обращений:
-- возьми НИЖНЮЮ границу диапазона запросов
-- рассчитай 3% и 5% от этого значения
-- укажи диапазон обращений в месяц
-
-Верни результат СТРОГО в следующем формате, без лишних комментариев:
-URL: {url}
-Тематика сайта:
-Регион работы:
-Потенциал целевых поисковых запросов в месяц:
-Потенциальные обращения (3–5% от нижней границы):
-Краткое пояснение (1–2 предложения)
-
-Данные сайта (Markdown, первые 8000 символов):
-{profile['content'][:8000]}"""
-    response = audit_call_with_fallback([{"role":"user","content":prompt}], temperature=0.2, max_tokens=1500)
+    if not profile.get("ok"): return f"❌ Не удалось загрузить сайт: {profile.get('issue')}"
+    prompt = AUDIT_3_PROMPT.format(url=url)
+    # добавляем данные сайта в конец промта
+    full_prompt = prompt + f"\n\nДанные сайта:\n{summarize_profile(profile)}"
+    response = call_groq([{"role":"user","content":full_prompt}], temperature=0.2, max_tokens=1500, router=rr_audit)
     return response.get("content","Ошибка генерации аудита")
 
-# ========== 11. ИНТЕРФЕЙС STREAMLIT ==========
+# ========== 10. ИНТЕРФЕЙС STREAMLIT ==========
 def build_validation_rows(verified_direct, verified_indirect):
     all_ver = verified_direct + verified_indirect
     all_ver.sort(key=lambda x: x["score"], reverse=True)
@@ -1068,7 +814,7 @@ with col1:
                 except Exception as e: st.error(f"Ошибка: {e}")
                 finally: queue.release()
 with col2:
-    if st.button("Перепроверка (только Groq/Gemini)"):
+    if st.button("Перепроверка (Groq)"):
         if not domain: st.warning("Введи домен")
         elif not queue.is_active(user_id):
             if not queue.add(user_id):
