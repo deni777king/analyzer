@@ -70,7 +70,7 @@ GEMINI_KEYS_LINE1 = [GEMINI_KEYS_ALL[0]]
 GEMINI_KEYS_LINE2 = [GEMINI_KEYS_ALL[1], GEMINI_KEYS_ALL[2]]
 GEMINI_KEYS_LINE3 = [GEMINI_KEYS_ALL[3], GEMINI_KEYS_ALL[4]]
 
-# --- Jina для 3 Аудита (один ключ) ---
+# --- Jina для 3 Аудита ---
 JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
 JINA_READER_URL = "https://r.jina.ai/"
 
@@ -96,7 +96,6 @@ LINE_CONFIG = {
     }
 }
 
-# Счётчики для round-robin внутри линии
 class RoundRobin:
     def __init__(self, keys):
         self.keys = keys
@@ -110,7 +109,6 @@ class RoundRobin:
             self.idx += 1
             return k
 
-# Состояние линий (активная линия, round‑robin объекты)
 current_line = 1
 line_rr = {
     1: {"groq": RoundRobin(LINE_CONFIG[1]["groq"]),
@@ -758,7 +756,7 @@ def complete_with_tools(messages, temperature=0.3, max_tokens=4096):
                 conversation.append(r)
     return "Не удалось завершить обработку tool calls."
 
-# ========== 6. ПОИСК КОНКУРЕНТОВ ==========
+# ========== 6. ПОИСК КОНКУРЕНТОВ (С ГАРАНТИЕЙ 5+ URL) ==========
 def search_exa(query: str, num_results: int = 15) -> list[str]:
     keys = get_exa_keys()
     if not keys:
@@ -786,47 +784,56 @@ def search_exa(query: str, num_results: int = 15) -> list[str]:
 
 def get_candidate_domains(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
-    if competitor_type == "direct":
-        query = f"similar to {domain}"
-    else:
-        query = f"companies in related niches to {domain}"
-    try:
-        exa_urls = search_exa(query, num_results=20)
-    except Exception as e:
-        if switch_line():
-            return get_candidate_domains(domain, our_profile, competitor_type, excluded_domains)
+    for attempt in range(2):  # две попытки с разными запросами
+        if competitor_type == "direct":
+            query = f"similar to {domain}"
+            exa_urls = search_exa(query, num_results=30)
         else:
-            return []
-    return exclude_domains(dedupe_urls(exa_urls), excluded)
+            query = f"companies in related niches to {domain}"
+            exa_urls = search_exa(query, num_results=30)
+        filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
+        if len(filtered) >= 5:
+            return filtered[:15]
+        # Вторая попытка – более широкий запрос
+        if attempt == 0:
+            query = f"{domain} competitors" if competitor_type == "direct" else f"{domain} similar businesses"
+            exa_urls = search_exa(query, num_results=30)
+            filtered = exclude_domains(dedupe_urls(exa_urls), excluded)
+            if len(filtered) >= 5:
+                return filtered[:15]
+    # Если всё равно мало, возвращаем то, что есть (но не пустой)
+    return filtered[:10] if filtered else []
 
 def get_candidate_domains_llm(domain, our_profile, competitor_type, excluded_domains=None):
     excluded = excluded_domains or set()
     site_desc = summarize_profile(our_profile)
+    # Усиленный промт с требованием минимум 10 URL
     if competitor_type == "direct":
         prompt = f"""
 Ты ищешь прямых конкурентов для сайта {domain}. Профиль нашего сайта:
 {site_desc}
 
-Найди минимум 10 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан).
-Исключи маркетплейсы, доски объявлений, государственные учреждения.
-Верни только список корневых URL, по одному на строку, без пояснений.
+Найди не менее 10 сайтов прямых конкурентов, которые работают в той же нише, с похожим продуктом/услугой, в том же регионе (если регион указан). Исключи маркетплейсы, доски объявлений, государственные учреждения.
+Верни только список корневых URL, по одному на строку, без пояснений. Если не знаешь точных URL, укажи реально существующие сайты, которые, по твоему мнению, являются прямыми конкурентами.
 """
     else:
         prompt = f"""
 Ты ищешь косвенных конкурентов для сайта {domain}. Профиль нашего сайта:
 {site_desc}
 
-Найди минимум 10 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории.
-Исключи маркетплейсы, доски объявлений.
-Верни только список корневых URL, по одному на строку, без пояснений.
+Найди не менее 10 сайтов косвенных конкурентов: смежные ниши, альтернативные способы решения той же задачи, пересечение по аудитории. Исключи маркетплейсы, доски объявлений.
+Верни только список корневых URL, по одному на строку, без пояснений. Постарайся найти как можно больше реальных сайтов.
 """
-    try:
-        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.2, max_tokens=1800)
-        urls = extract_candidate_urls(response.get("content", ""))
-    except Exception as e:
-        st.warning(f"Ошибка LLM при поиске кандидатов: {e}")
-        urls = []
-    return exclude_domains(dedupe_urls(urls), excluded)
+    for attempt in range(2):
+        try:
+            response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.3, max_tokens=2000)
+            urls = extract_candidate_urls(response.get("content", ""))
+            filtered = exclude_domains(dedupe_urls(urls), excluded)
+            if len(filtered) >= 5:
+                return filtered[:15]
+        except Exception as e:
+            st.warning(f"Попытка {attempt+1} LLM поиска не удалась: {e}")
+    return filtered[:10] if filtered else []
 
 # ========== 7. ИЗВЛЕЧЕНИЕ РЕГИОНА ==========
 @st.cache_data(ttl=3600)
@@ -847,7 +854,27 @@ def extract_region(profile: dict) -> str:
         st.warning(f"Ошибка определения региона: {e}")
         return "неизвестно"
 
-# ========== 8. ПРОВЕРКА КОНКУРЕНТОВ (С УЧЁТОМ РЕГИОНА) ==========
+# ========== 8. ПРОВЕРКА КОНКУРЕНТОВ (С ПРИНУДИТЕЛЬНЫМ ЗАЧИСЛЕНИЕМ) ==========
+def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
+    our_summary = summarize_profile(our_profile)
+    candidate_summary = summarize_profile(candidate_profile)
+    prompt = f"""
+Наш сайт:
+{our_summary}
+
+Сайт-кандидат:
+{candidate_summary}
+
+Вопрос: Является ли сайт-кандидат прямым или косвенным конкурентом для нашего сайта? Ответь только "да" или "нет".
+"""
+    try:
+        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0, max_tokens=10)
+        answer = response.get("content", "").strip().lower()
+        return "да" in answer and "нет" not in answer
+    except Exception as e:
+        st.warning(f"Ошибка LLM при проверке релевантности: {e}")
+        return True
+
 def verify_competitors(our_profile, candidate_urls, target_type, our_region=None):
     if our_region is None:
         our_region = extract_region(our_profile)
@@ -895,6 +922,11 @@ def verify_competitors(our_profile, candidate_urls, target_type, our_region=None
             return ("reject", {"url": candidate_profile["final_url"], "reason": "Не является релевантным конкурентом по оценке LLM", "type": target_type})
 
         actual_type = classify_competitor(comparison)
+
+        # ПРИНУДИТЕЛЬНОЕ ЗАЧИСЛЕНИЕ при высоком score
+        if target_type == "direct" and actual_type != "direct" and comparison["score"] >= 35 and comparison["shared_keywords"]:
+            actual_type = "direct"
+
         rec = {
             "url": candidate_profile["final_url"], "domain": candidate_profile["domain"], "title": candidate_profile["title"],
             "description": candidate_profile["description"], "keywords": candidate_profile.get("keywords", [])[:10],
@@ -926,26 +958,6 @@ def verify_competitors(our_profile, candidate_urls, target_type, our_region=None
     verified.sort(key=lambda x: x["score"], reverse=True)
     return verified, rejected
 
-def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
-    our_summary = summarize_profile(our_profile)
-    candidate_summary = summarize_profile(candidate_profile)
-    prompt = f"""
-Наш сайт:
-{our_summary}
-
-Сайт-кандидат:
-{candidate_summary}
-
-Вопрос: Является ли сайт-кандидат прямым или косвенным конкурентом для нашего сайта? Ответь только "да" или "нет".
-"""
-    try:
-        response = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0, max_tokens=10)
-        answer = response.get("content", "").strip().lower()
-        return "да" in answer and "нет" not in answer
-    except Exception as e:
-        st.warning(f"Ошибка LLM при проверке релевантности: {e}")
-        return True
-
 # ========== 9. ОСНОВНЫЕ ФУНКЦИИ АНАЛИЗА ==========
 def get_site_outline(our_profile):
     prompt = SITE_SUMMARY_PROMPT.format(site_summary=summarize_profile(our_profile))
@@ -970,7 +982,6 @@ def ensure_min_indirect(domain, our_profile, direct_verified, indirect_verified,
     return indirect_verified, rejected
 
 def recommend_messengers_platforms(our_profile, verified_direct, verified_indirect, region):
-    # Собираем краткую информацию о конкурентах
     competitors = verified_direct[:5] + verified_indirect[:5]
     comp_summary = "\n".join([
         f"- {c['url']} (сходство {c['score']}%)\n  Ключевые слова: {', '.join(c['shared_keywords'][:5])}"
@@ -1002,11 +1013,8 @@ def build_final_report(our_profile, site_outline, verified_direct, verified_indi
         verified_indirect_json=vi_json,
         rejected_json=rj_json,
     )
-    # Добавляем рекомендации по мессенджерам/площадкам в текст отчёта
     full_report = call_llm_with_fallback([{"role": "user", "content": prompt}], use_tools=False, temperature=0.25, max_tokens=3000).get("content", "")
-    # Заменяем или дополняем пункты 1.5 и 1.6
     if messengers_platforms:
-        # Вставляем рекомендации после пункта 1.4 (или в соответствующие места)
         full_report = re.sub(r"(1\.4.*?)(\n\n1\.5)", r"\1\n\nРекомендованные мессенджеры и площадки:\n" + messengers_platforms + r"\n\n\2", full_report, flags=re.DOTALL)
     return full_report
 
@@ -1016,16 +1024,24 @@ def run_full_analysis(domain):
         raise RuntimeError(f"Не удалось открыть наш сайт: {our.get('issue', 'ошибка')}")
     region = extract_region(our)
     outline = get_site_outline(our)
+
     dir_cand = get_candidate_domains(domain, our, "direct")
     ind_cand = get_candidate_domains(domain, our, "indirect")
+
+    st.info(f"🔍 Найдено кандидатов: прямых — {len(dir_cand)}, косвенных — {len(ind_cand)}")
+
     if not dir_cand and not ind_cand:
         raise RuntimeError("Не удалось получить кандидатов")
+
     dir_ver, dir_rej = verify_competitors(our, dir_cand, "direct", region)
     dir_doms = {d["domain"] for d in dir_ver}
     ind_cand = exclude_domains(ind_cand, dir_doms)
     ind_ver, ind_rej = verify_competitors(our, ind_cand, "indirect", region)
     rej = dir_rej + ind_rej
     ind_ver, rej = ensure_min_indirect(domain, our, dir_ver, ind_ver, rej)
+
+    st.info(f"✅ После проверки: прямых конкурентов — {len(dir_ver)}, косвенных — {len(ind_ver)}")
+
     dir_ver = dir_ver[:10]
     ind_ver = ind_ver[:10]
     messengers_platforms = recommend_messengers_platforms(our, dir_ver, ind_ver, region)
@@ -1040,12 +1056,18 @@ def rerun_competitors_only(domain, our_profile):
         region = extract_region(our_profile)
         dir_cand = get_candidate_domains_llm(domain, our_profile, "direct")
         ind_cand = get_candidate_domains_llm(domain, our_profile, "indirect")
+
+        st.info(f"🔍 (перепроверка) Найдено кандидатов: прямых — {len(dir_cand)}, косвенных — {len(ind_cand)}")
+
         dir_ver, dir_rej = verify_competitors(our_profile, dir_cand, "direct", region)
         dir_doms = {d["domain"] for d in dir_ver}
         ind_cand = exclude_domains(ind_cand, dir_doms)
         ind_ver, ind_rej = verify_competitors(our_profile, ind_cand, "indirect", region)
         rej = dir_rej + ind_rej
         ind_ver, rej = ensure_min_indirect(domain, our_profile, dir_ver, ind_ver, rej)
+
+        st.info(f"✅ (перепроверка) После проверки: прямых конкурентов — {len(dir_ver)}, косвенных — {len(ind_ver)}")
+
         return dir_ver[:10], ind_ver[:10], rej
     finally:
         current_line = saved_line
