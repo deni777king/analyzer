@@ -4,13 +4,11 @@ import re
 import threading
 import time
 import random
-import concurrent.futures
 from collections import Counter, deque
 from urllib.parse import urlparse
 
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
 from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Конкурентный Анализатор | 5 сайтов", layout="wide")
@@ -39,7 +37,6 @@ EXA_API_KEYS = [
 JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
 JINA_READER_URL = "https://r.jina.ai/"
 
-# OpenAI ключ (платный ChatGPT)
 OPENAI_API_KEY = "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"
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -96,7 +93,7 @@ if "current_user_id" not in st.session_state:
 user_id = st.session_state.current_user_id
 queue = st.session_state.user_queue
 
-# ========== 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (без изменений) ==========
+# ========== 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
@@ -410,20 +407,23 @@ def find_competitors_with_openai(domain: str, profile: dict):
         return [], {}
 
 # ========== 8. ФУНКЦИИ ДЛЯ РЕКОМЕНДАЦИЙ И ИМИДЖЕВОГО АНАЛИЗА (через Groq) ==========
-MESSENGER_RECOMMEND_PROMPT = """Ты аналитик по маркетингу. На основе данных о сайте и его конкурентах определи, какие мессенджеры и площадки лучше всего подойдут для привлечения клиентов.
+def recommend_messengers_platforms(our_profile, competitors, region):
+    comp_summary = "\n".join([f"- {c['url']}" for c in competitors[:5]]) if competitors else "Нет данных о конкурентах."
+    our_summary = summarize_profile(our_profile)
+    prompt = f"""
+Ты аналитик по маркетингу. На основе данных о сайте и его конкурентах определи, какие мессенджеры и площадки лучше всего подойдут для привлечения клиентов.
 
 Данные о нашем сайте:
 {our_summary}
 
 Данные о конкурентах (до 10 сайтов):
-{competitors_summary}
+{comp_summary}
 
 Регион работы: {region}
 
 Проанализируй:
-- Какие мессенджеры популярны в этом регионе (Telegram, WhatsApp, Viber и др.)
-- Какие площадки соответствуют тематике сайта (например, для товаров – Яндекс.Маркет, Ozon, Wildberries; для услуг – Avito, Profi.ru, YouDo; для b2b – партнёрские сети и т.д.)
-- Учитывай, что в РФ некоторые мессенджеры могут быть заблокированы.
+- Какие мессенджеры популярны в этом регионе (Telegram, WhatsApp, Viber и др.). Исключи заблокированные в стране работы сайта.
+- Какие площадки соответствуют тематике сайта (приоритет нишевым порталам, специализированным каталогам; доски объявлений типа Авито — по остаточному принципу).
 
 Верни ответ строго в формате:
 Мессенджеры (с процентами):
@@ -431,14 +431,8 @@ MESSENGER_RECOMMEND_PROMPT = """Ты аналитик по маркетингу.
 - ...
 Площадки (с процентами):
 - Название: %
-- ..."""
-
-def recommend_messengers_platforms(our_profile, competitors, region):
-    comp_summary = "\n".join([f"- {c['url']} (сходство {c['score']}%)\n  Ключевые слова: {', '.join(c['shared_keywords'][:5])}" for c in competitors[:5] if c.get("shared_keywords")])
-    if not comp_summary:
-        comp_summary = "Нет данных о конкурентах."
-    our_summary = summarize_profile(our_profile)
-    prompt = MESSENGER_RECOMMEND_PROMPT.format(our_summary=our_summary, competitors_summary=comp_summary, region=region)
+- ...
+"""
     try:
         response = call_groq_main([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=800)
         return response.get("content", "")
@@ -446,7 +440,9 @@ def recommend_messengers_platforms(our_profile, competitors, region):
         st.warning(f"Ошибка при рекомендации: {e}")
         return "Рекомендации не удалось сформировать."
 
-IMIDGE_PROMPT = """
+def analyze_imidj(url: str, profile: dict) -> str:
+    summary = summarize_profile(profile)
+    prompt = f"""
 Ты аналитик сайтов. Проверь сайт по URL и определи, относится ли он к "имиджевым клиентам".
 
 Критерии имиджевого клиента:
@@ -461,19 +457,53 @@ IMIDGE_PROMPT = """
 - подрядчик при госучреждении
 - сомнительная известность
 
-Проанализируй сайт и дай ответ строго в формате:
+Проанализируй сайт: {profile['final_url']}
+Профиль: {summary}
+
+Верни ответ строго в формате:
 Имиджевый клиент: Да/Нет
 Пояснение: (1-2 предложения)
 """
-
-def analyze_imidj(url: str) -> str:
-    profile = fetch_site_profile(url)
-    if not profile.get("ok"):
-        return f"Не удалось загрузить сайт: {profile.get('issue')}"
-    summary = summarize_profile(profile)
-    prompt = f"URL: {profile['final_url']}\n{IMIDGE_PROMPT}\nПрофиль сайта:\n{summary}"
     response = call_groq_main([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=300)
     return response.get("content", "Ошибка анализа")
+
+def get_site_type_and_geography(profile: dict) -> dict:
+    prompt = f"""
+Проанализируй сайт: {profile['final_url']}
+
+1. Тип сайта: коммерческий или некоммерческий? Если есть противоречия, укажи их.
+2. География бизнеса (страна, регион/город). Регион работы определяй по офферу услуг, а не по фактическому адресу офиса.
+Обязательно проанализируй: блок «О компании», первый экран, раздел «Услуги / География работ», страницу доставки, упоминания («работаем по России», «по всей территории РФ», «выезд по регионам», «федеральный уровень»), кейсы и портфолио. Контакты используй только как подтверждение базового офиса.
+
+Верни ответ в две строки:
+Тип сайта:
+География:
+"""
+    response = call_groq_main([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=300)
+    lines = response.get("content", "").strip().split("\n")
+    type_line = lines[0].replace("Тип сайта:", "").strip() if len(lines) > 0 else ""
+    geo_line = lines[1].replace("География:", "").strip() if len(lines) > 1 else ""
+    return {"type": type_line, "geography": geo_line}
+
+def get_commercial_queries(profile: dict) -> str:
+    prompt = f"""
+Проанализируй сайт: {profile['final_url']}
+Профиль: {summarize_profile(profile)}
+
+Подбери 10 коммерческих поисковых запросов, которые приведут реальных клиентов (купить, заказать, получить расчет/консультацию).
+Требования:
+- Только коммерческий интент.
+- Упор на средне- и низкочастотные запросы.
+- Строгая релевантность услугам сайта.
+- НЕ использовать названия регионов/городов.
+- ИСКЛЮЧИТЬ информационные, обучающие, слишком общие и высокочастотные фразы.
+
+Формат: каждая фраза с примерным количеством просмотров в месяц (ориентир на Яндекс.Вордстат для РФ/РБ или Google Ads для УЗ/КЗ). Если точных данных нет, просто укажи фразу.
+
+Верни список из 10 строк в формате: "запрос — количество"
+"""
+    response = call_groq_main([{"role": "user", "content": prompt}], temperature=0.3, max_tokens=1500)
+    return response.get("content", "Ошибка генерации запросов")
 
 # ========== 9. ФУНКЦИЯ 3 АУДИТА ==========
 def run_3_audit(url: str) -> str:
@@ -536,45 +566,17 @@ def analyze_single_site(domain: str, use_openai: bool = False) -> dict:
         if not profile.get("ok"):
             raise RuntimeError(f"Не удалось открыть сайт: {profile.get('issue', 'ошибка')}")
 
-        # Пункт 1 (Groq)
-        prompt1 = f"""
-Проанализируй сайт: {profile['final_url']}
-На основе профиля сайта и его содержимого определи:
-1. Коммерческий или некоммерческий? (если есть противоречия, укажи)
-2. Страна, регион/город. Используй: блок «О компании», тексты на первом экране, раздел услуги/география, упоминания «работаем по России», кейсы, доставку, контакты как подтверждение, но не основной фактор.
-3. Работает локально или по всей стране/регионально? (локально — один город/регион, регионально — несколько регионов, по всей стране — вся страна)
-
-Верни ответ в три строки:
-Статус:
-Регион:
-Масштаб:
-"""
-        response1 = call_groq_main([{"role": "user", "content": prompt1}], temperature=0.2, max_tokens=300)
-        lines = response1.get("content", "").strip().split("\n")
-        status_line = lines[0].replace("Статус:", "").strip() if len(lines) > 0 else ""
-        region_line = lines[1].replace("Регион:", "").strip() if len(lines) > 1 else ""
-        scale_line = lines[2].replace("Масштаб:", "").strip() if len(lines) > 2 else ""
-        results["data"]["point1"] = {"status": status_line, "region": region_line, "scale": scale_line}
+        # Пункт 1
+        point1 = get_site_type_and_geography(profile)
+        results["data"]["point1"] = point1
         time.sleep(0.5)
 
-        # Пункт 2 (Groq)
-        prompt2 = f"""
-Проанализируй сайт: {profile['final_url']}
-Профиль: {summarize_profile(profile)}
-
-Подбери 10 коммерческих поисковых запросов, которые приводят реальных клиентов, а не информационный трафик.
-Требования: не использовать название региона в ключевых фразах, исключить информационные, слишком общие и высокочастотные запросы.
-Упор на средне- и низкочастотные, с коммерческим интентом (купить, заказать, получить расчет, консультацию).
-Запросы должны быть строго релевантны услугам/товарам сайта.
-Если сайт работает локально, дай запросы для региона; если по всей стране/онлайн — запросы по стране.
-Верни список из 10 фраз, каждая с примерным количеством просмотров в месяц (если нет данных — укажи оценку). Формат: "запрос — количество".
-Если точных данных нет, укажи диапазон (например, "50–200") или "нет данных".
-"""
-        response2 = call_groq_main([{"role": "user", "content": prompt2}], temperature=0.3, max_tokens=1500)
-        results["data"]["point2"] = response2.get("content", "Ошибка генерации запросов")
+        # Пункт 2
+        point2 = get_commercial_queries(profile)
+        results["data"]["point2"] = point2
         time.sleep(0.5)
 
-        # Пункт 3: конкуренты (только если use_openai=True)
+        # Пункт 3: конкуренты (только если use_openai)
         if use_openai:
             comp_list, usage = find_competitors_with_openai(domain, profile)
             results["data"]["point3"] = comp_list[:10]
@@ -584,10 +586,9 @@ def analyze_single_site(domain: str, use_openai: bool = False) -> dict:
             results["data"]["openai_usage"] = {}
         time.sleep(0.5)
 
-        # Пункт 4 (Groq)
-        region = results["data"]["point1"].get("region", "")
-        # Для рекомендаций используем список конкурентов, если есть
-        comp_for_rec = [{"url": u, "score": 0, "shared_keywords": []} for u in comp_list[:5]] if use_openai else []
+        # Пункт 4: мессенджеры и площадки
+        region = point1.get("geography", "")
+        comp_for_rec = [{"url": u} for u in comp_list[:5]] if use_openai else []
         rec_text = recommend_messengers_platforms(profile, comp_for_rec, region)
         messengers = []
         platforms = []
@@ -608,12 +609,12 @@ def analyze_single_site(domain: str, use_openai: bool = False) -> dict:
                             messengers.append((name, perc))
                         elif current == "plat":
                             platforms.append((name, perc))
-        imidj_result = analyze_imidj(domain)
-        results["data"]["point4"] = {
-            "messengers": messengers[:5],
-            "platforms": platforms[:5],
-            "imidj": imidj_result
-        }
+        results["data"]["point4"] = {"messengers": messengers[:5], "platforms": platforms[:5]}
+        time.sleep(0.5)
+
+        # Пункт 5: имиджевый анализ
+        point5 = analyze_imidj(domain, profile)
+        results["data"]["point5"] = point5
 
     except Exception as e:
         results["status"] = "error"
@@ -628,21 +629,19 @@ for i in range(5):
         domains.append(st.text_input(f"Сайт {i+1}", key=f"domain_{i}", placeholder="example.com"))
 
 if st.button("Анализировать 5 сайтов"):
-    # Собираем валидные домены (не пустые)
-    valid_domains = []
+    # Собираем валидные домены с сохранением позиции
+    valid = []
     for i, d in enumerate(domains):
         if d.strip():
-            valid_domains.append((i, d.strip()))  # сохраняем индекс для определения позиции
+            valid.append((i, d.strip()))
 
-    if not valid_domains:
+    if not valid:
         st.warning("Введите хотя бы один домен")
     else:
         with st.spinner("Анализируем сайты..."):
             results_dict = {}
-            # Обрабатываем сайты последовательно
-            for idx, (pos, domain) in enumerate(valid_domains):
-                # use_openai = True только если это поле "Сайт 1" (индекс 0)
-                use_openai = (pos == 0)
+            for pos, domain in valid:
+                use_openai = (pos == 0)  # только для поля "Сайт 1"
                 st.write(f"Обработка {domain}...")
                 try:
                     res = analyze_single_site(domain, use_openai)
@@ -651,20 +650,19 @@ if st.button("Анализировать 5 сайтов"):
                     results_dict[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
                 time.sleep(1)
 
-            # Вывод результатов в порядке полей (сохраняя порядок)
-            for pos, domain in valid_domains:
+            for pos, domain in valid:
                 res = results_dict.get(domain, {"status": "error", "error": "Неизвестная ошибка"})
                 with st.expander(f"📊 {domain}", expanded=True):
                     if res["status"] == "error":
                         st.error(f"Ошибка: {res['error']}")
                         continue
                     data = res["data"]
-                    st.markdown("**1. Коммерческий статус, регион, масштаб**")
-                    st.write(f"**Статус:** {data.get('point1', {}).get('status', '—')}")
-                    st.write(f"**Регион:** {data.get('point1', {}).get('region', '—')}")
-                    st.write(f"**Масштаб:** {data.get('point1', {}).get('scale', '—')}")
 
-                    st.markdown("**2. Топ-10 коммерческих запросов**")
+                    st.markdown("**1. Тип сайта и география бизнеса**")
+                    st.write(f"**Тип сайта:** {data.get('point1', {}).get('type', '—')}")
+                    st.write(f"**География:** {data.get('point1', {}).get('geography', '—')}")
+
+                    st.markdown("**2. Семантика (10 коммерческих запросов)**")
                     st.markdown(data.get("point2", "Нет данных"))
 
                     st.markdown("**3. Прямые конкуренты**")
@@ -678,16 +676,16 @@ if st.button("Анализировать 5 сайтов"):
                         else:
                             st.write("Конкуренты ищутся только для сайта 1")
 
-                    # Статистика токенов для первого сайта (всегда)
-                    usage = data.get("openai_usage", {})
-                    if usage:
+                    # Статистика токенов для первого сайта
+                    if pos == 0 and data.get("openai_usage"):
+                        usage = data["openai_usage"]
                         st.markdown("---")
                         st.markdown("**Статистика использования OpenAI:**")
                         st.write(f"- Входные токены: {usage.get('prompt_tokens', 0)}")
                         st.write(f"- Выходные токены: {usage.get('completion_tokens', 0)}")
                         st.write(f"- Всего токенов: {usage.get('total_tokens', 0)}")
 
-                    st.markdown("**4. Мессенджеры, площадки и имиджевый анализ**")
+                    st.markdown("**4. Мессенджеры и площадки для привлечения клиентов**")
                     point4 = data.get("point4", {})
                     if point4.get("messengers"):
                         st.write("**Мессенджеры:**")
@@ -701,9 +699,9 @@ if st.button("Анализировать 5 сайтов"):
                             st.write(f"- {name}: {perc}")
                     else:
                         st.write("Нет данных по площадкам")
-                    if point4.get("imidj"):
-                        st.write("**Имиджевый анализ:**")
-                        st.write(point4["imidj"])
+
+                    st.markdown("**5. Имиджевый анализ**")
+                    st.write(data.get("point5", "Нет данных"))
 
         st.success("Анализ завершён!")
 
