@@ -326,7 +326,6 @@ def fetch_site_profile(url_or_domain: str) -> dict:
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 def call_groq_main(messages, temperature=0.3, max_tokens=4096, retries=3):
-    """Вызов Groq с повторными попытками при rate limit"""
     for attempt in range(retries):
         api_key = groq_main_rr.get()
         if not api_key:
@@ -363,7 +362,6 @@ def call_groq_audit(messages, temperature=0.3, max_tokens=4096):
         raise Exception(f"Groq аудит ошибка {response.status_code}")
 
 def call_openai_with_stats(messages, temperature=0.3, max_tokens=4096):
-    """Вызов OpenAI с возвратом статистики токенов"""
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json"
@@ -383,114 +381,35 @@ def call_openai_with_stats(messages, temperature=0.3, max_tokens=4096):
     else:
         raise Exception(f"OpenAI ошибка {response.status_code}: {response.text}")
 
-# ========== 7. ПОИСК КОНКУРЕНТОВ ЧЕРЕЗ EXA (не используется, оставлено на случай) ==========
-def search_exa(query: str, num_results: int = 15) -> list[str]:
-    api_key = exa_rr.get()
-    if not api_key:
-        return []
-    url = "https://api.exa.ai/search"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"query": query, "type": "neural", "numResults": num_results, "contents": {"text": False}}
-    try:
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            return dedupe_urls([normalize_root_url(r["url"]) for r in data.get("results", [])])
-        elif response.status_code == 429:
-            raise Exception("Rate limit")
-    except Exception as e:
-        raise Exception(f"Exa ошибка: {e}")
-
-def get_candidate_domains(domain, competitor_type):
-    if competitor_type == "direct":
-        query = f"similar to {domain}"
-    else:
-        query = f"companies in related niches to {domain}"
-    try:
-        exa_urls = search_exa(query, num_results=20)
-    except Exception as e:
-        st.warning(f"Exa поиск не удался: {e}")
-        exa_urls = []
-    return dedupe_urls(exa_urls)[:30]
-
-# ========== 8. ПРОВЕРКА КОНКУРЕНТОВ (через Groq) — НЕ ИСПОЛЬЗУЕТСЯ ==========
-def is_relevant_competitor(our_profile: dict, candidate_profile: dict) -> bool:
-    our_summary = summarize_profile(our_profile)
-    candidate_summary = summarize_profile(candidate_profile)
+# ========== 7. ПОИСК КОНКУРЕНТОВ ЧЕРЕЗ OPENAI ==========
+def find_competitors_with_openai(domain: str, profile: dict):
+    summary = summarize_profile(profile)
     prompt = f"""
-Наш сайт:
-{our_summary}
+Ты — SEO-аналитик. На основе информации о сайте найди 10 прямых конкурентов (корневые URL).
 
-Сайт-кандидат:
-{candidate_summary}
+Сайт:
+{summary}
 
-Вопрос: Является ли сайт-кандидат прямым или косвенным конкурентом для нашего сайта? Ответь только "да" или "нет".
+Верни только список URL, по одному на строку, без лишнего текста. Убедись, что это корневые домены (https://example.com), без подпапок.
 """
     try:
-        response = call_groq_main([{"role": "user", "content": prompt}], temperature=0, max_tokens=10)
-        answer = response.get("content", "").strip().lower()
-        return "да" in answer and "нет" not in answer
+        message, usage = call_openai_with_stats([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=800)
+        content = message.get("content", "")
+        urls = extract_candidate_urls(content)
+        normalized = []
+        seen = set()
+        for url in urls:
+            norm = normalize_root_url(url)
+            dom = get_domain_key(norm)
+            if dom and dom not in seen:
+                seen.add(dom)
+                normalized.append(norm)
+        return normalized[:10], usage
     except Exception as e:
-        st.warning(f"Ошибка Groq при проверке релевантности: {e}")
-        return True
+        st.warning(f"Ошибка OpenAI при поиске конкурентов: {e}")
+        return [], {}
 
-def verify_competitors(our_profile, candidate_urls):
-    verified = []
-    seen = set()
-    unique = []
-    for raw in candidate_urls:
-        url = normalize_root_url(raw)
-        dom = get_domain_key(url)
-        if dom and dom not in seen:
-            seen.add(dom)
-            unique.append(url)
-
-    for url in unique:
-        domain = get_domain_key(url)
-        if domain == our_profile.get("domain"):
-            continue
-        if is_blocked_domain(domain):
-            continue
-
-        candidate_profile = fetch_site_profile(url)
-        if not candidate_profile.get("ok"):
-            continue
-
-        our_keywords_set = set(our_profile.get("keywords", []))
-        candidate_keywords_set = set(candidate_profile.get("keywords", []))
-        if not (our_keywords_set & candidate_keywords_set):
-            continue
-
-        comparison = compare_profiles(our_profile, candidate_profile)
-        if comparison["score"] < 10:
-            continue
-
-        if not is_relevant_competitor(our_profile, candidate_profile):
-            continue
-
-        actual_type = classify_competitor(comparison)
-        if actual_type != "direct":
-            continue
-
-        verified.append({
-            "url": candidate_profile["final_url"],
-            "domain": candidate_profile["domain"],
-            "title": candidate_profile["title"],
-            "description": candidate_profile["description"],
-            "keywords": candidate_profile.get("keywords", [])[:10],
-            "score": comparison["score"],
-            "relevance": comparison["relevance"],
-            "shared_keywords": comparison["shared_keywords"],
-            "scale_comment": comparison["scale_comment"],
-            "reason": comparison["reason"]
-        })
-
-        time.sleep(0.5)
-
-    verified.sort(key=lambda x: x["score"], reverse=True)
-    return verified
-
-# ========== 9. ФУНКЦИИ ДЛЯ РЕКОМЕНДАЦИЙ (через Groq) ==========
+# ========== 8. ФУНКЦИИ ДЛЯ РЕКОМЕНДАЦИЙ (через Groq) ==========
 MESSENGER_RECOMMEND_PROMPT = """Ты аналитик по маркетингу. На основе данных о сайте и его конкурентах определи, какие мессенджеры и площадки лучше всего подойдут для привлечения клиентов.
 
 Данные о нашем сайте:
@@ -527,7 +446,7 @@ def recommend_messengers_platforms(our_profile, competitors, region):
         st.warning(f"Ошибка при рекомендации: {e}")
         return "Рекомендации не удалось сформировать."
 
-# ========== 10. ИМИДЖЕВЫЙ АНАЛИЗ (через Groq) ==========
+# ========== 9. ИМИДЖЕВЫЙ АНАЛИЗ (через Groq) ==========
 IMIDGE_PROMPT = """
 Ты аналитик сайтов. Проверь сайт по URL и определи, относится ли он к "имиджевым клиентам".
 
@@ -557,7 +476,7 @@ def analyze_imidj(url: str) -> str:
     response = call_groq_main([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=300)
     return response.get("content", "Ошибка анализа")
 
-# ========== 11. ФУНКЦИЯ 3 АУДИТА (отдельный ключ) ==========
+# ========== 10. ФУНКЦИЯ 3 АУДИТА ==========
 def run_3_audit(url: str) -> str:
     try:
         jina_url = JINA_READER_URL + url
@@ -614,45 +533,15 @@ URL: {url}
     except Exception as e:
         return f"❌ Ошибка при выполнении 3 аудита: {e}"
 
-# ========== 12. НОВАЯ ФУНКЦИЯ: поиск конкурентов через ChatGPT для первого домена ==========
-def find_competitors_with_openai(domain: str, profile: dict):
-    """Использует ChatGPT для поиска прямых конкурентов. Возвращает (список URL, статистика токенов)"""
-    summary = summarize_profile(profile)
-    prompt = f"""
-Ты — SEO-аналитик. На основе информации о сайте найди 10 прямых конкурентов (корневые URL).
-
-Сайт:
-{summary}
-
-Верни только список URL, по одному на строку, без лишнего текста. Убедись, что это корневые домены (https://example.com), без подпапок.
-"""
-    try:
-        message, usage = call_openai_with_stats([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=800)
-        content = message.get("content", "")
-        urls = extract_candidate_urls(content)
-        normalized = []
-        seen = set()
-        for url in urls:
-            norm = normalize_root_url(url)
-            dom = get_domain_key(norm)
-            if dom and dom not in seen:
-                seen.add(dom)
-                normalized.append(norm)
-        return normalized[:10], usage
-    except Exception as e:
-        st.warning(f"Ошибка OpenAI при поиске конкурентов: {e}")
-        return [], {}
-
-# ========== 13. АНАЛИЗ ОДНОГО САЙТА ПО 4 ПУНКТАМ ==========
+# ========== 11. АНАЛИЗ ОДНОГО САЙТА ==========
 def analyze_single_site(domain: str, is_first: bool = False) -> dict:
-    """Анализирует один сайт. Если is_first=True, ищет конкурентов через OpenAI."""
     results = {"domain": domain, "status": "ok", "error": None, "data": {}}
     try:
         profile = fetch_site_profile(domain)
         if not profile.get("ok"):
             raise RuntimeError(f"Не удалось открыть сайт: {profile.get('issue', 'ошибка')}")
 
-        # Пункт 1: коммерческий статус, регион, масштаб (Groq)
+        # Пункт 1: Groq
         prompt1 = f"""
 Проанализируй сайт: {profile['final_url']}
 На основе профиля сайта и его содержимого определи:
@@ -673,7 +562,7 @@ def analyze_single_site(domain: str, is_first: bool = False) -> dict:
         results["data"]["point1"] = {"status": status_line, "region": region_line, "scale": scale_line}
         time.sleep(0.5)
 
-        # Пункт 2: топ-10 коммерческих запросов (Groq)
+        # Пункт 2: Groq
         prompt2 = f"""
 Проанализируй сайт: {profile['final_url']}
 Профиль: {summarize_profile(profile)}
@@ -690,20 +579,18 @@ def analyze_single_site(domain: str, is_first: bool = False) -> dict:
         results["data"]["point2"] = response2.get("content", "Ошибка генерации запросов")
         time.sleep(0.5)
 
-        # Пункт 3: прямые конкуренты
+        # Пункт 3: конкуренты (только для первого сайта, через OpenAI)
         if is_first:
             comp_list, usage = find_competitors_with_openai(domain, profile)
             results["data"]["point3"] = comp_list[:10]
-            # Сохраняем статистику токенов
             results["data"]["openai_usage"] = usage
         else:
             results["data"]["point3"] = []
             results["data"]["openai_usage"] = {}
         time.sleep(0.5)
 
-        # Пункт 4: мессенджеры, площадки, имиджевый анализ (Groq)
+        # Пункт 4: Groq
         region = results["data"]["point1"].get("region", "")
-        # Для рекомендаций используем список конкурентов, если есть (для первого сайта), иначе пустой
         comp_for_rec = [{"url": u, "score": 0, "shared_keywords": []} for u in comp_list[:5]] if is_first else []
         rec_text = recommend_messengers_platforms(profile, comp_for_rec, region)
         messengers = []
@@ -737,7 +624,7 @@ def analyze_single_site(domain: str, is_first: bool = False) -> dict:
         results["error"] = str(e)
     return results
 
-# ========== 14. ИНТЕРФЕЙС STREAMLIT ==========
+# ========== 12. ИНТЕРФЕЙС STREAMLIT ==========
 domains = []
 cols = st.columns(5)
 for i in range(5):
@@ -751,16 +638,15 @@ if st.button("Анализировать 5 сайтов"):
     else:
         with st.spinner("Анализируем сайты..."):
             results_dict = {}
-            # Обрабатываем сайты последовательно
             for idx, domain in enumerate(valid_domains):
-                is_first = (idx == 0)  # только первый домен ищет конкурентов через OpenAI
+                is_first = (idx == 0)
                 st.write(f"Обработка {domain}...")
                 try:
                     res = analyze_single_site(domain, is_first)
                     results_dict[domain] = res
                 except Exception as e:
                     results_dict[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
-                time.sleep(1)  # пауза между сайтами
+                time.sleep(1)
 
             for domain in valid_domains:
                 res = results_dict.get(domain, {"status": "error", "error": "Неизвестная ошибка"})
@@ -782,16 +668,20 @@ if st.button("Анализировать 5 сайтов"):
                     if comps:
                         for url in comps:
                             st.markdown(f"- [{url}]({url})")
-                        # Выводим статистику токенов OpenAI, если есть
-                        usage = data.get("openai_usage", {})
-                        if usage:
-                            st.markdown("---")
-                            st.markdown("**Статистика использования OpenAI:**")
-                            st.write(f"- Входные токены: {usage.get('prompt_tokens', 0)}")
-                            st.write(f"- Выходные токены: {usage.get('completion_tokens', 0)}")
-                            st.write(f"- Всего токенов: {usage.get('total_tokens', 0)}")
                     else:
                         st.write("Не найдено (конкуренты ищутся только для первого сайта)")
+
+                    # Всегда выводим статистику OpenAI для первого сайта (даже если конкурентов нет)
+                    usage = data.get("openai_usage", {})
+                    if usage:
+                        st.markdown("---")
+                        st.markdown("**Статистика использования OpenAI:**")
+                        st.write(f"- Входные токены: {usage.get('prompt_tokens', 0)}")
+                        st.write(f"- Выходные токены: {usage.get('completion_tokens', 0)}")
+                        st.write(f"- Всего токенов: {usage.get('total_tokens', 0)}")
+                    elif idx == 0:
+                        st.markdown("---")
+                        st.write("Статистика OpenAI не доступна (ошибка вызова)")
 
                     st.markdown("**4. Мессенджеры, площадки и имиджевый анализ**")
                     point4 = data.get("point4", {})
@@ -813,7 +703,7 @@ if st.button("Анализировать 5 сайтов"):
 
         st.success("Анализ завершён!")
 
-# ========== 15. КНОПКА 3 АУДИТА (отдельная) ==========
+# ========== 13. КНОПКА 3 АУДИТА ==========
 st.markdown("---")
 st.subheader("3 Аудит (отдельный пул Groq)")
 audit_url = st.text_input("Введите URL для 3 аудита", key="audit_input", placeholder="https://...")
