@@ -16,16 +16,7 @@ from bs4 import BeautifulSoup
 st.set_page_config(page_title="Конкурентный Анализатор | 5 сайтов", layout="wide")
 st.title("Конкурентный Анализатор (5 сайтов)")
 
-# ========== 1. НОВЫЕ КЛЮЧИ ==========
-
-# --- Gemini (5 ключей) ---
-GEMINI_API_KEYS = [
-    "AIzaSyC_iVB_1D0bDeouLZ6GWlv2wOjeQGaR248",
-    "AIzaSyBoEiM2TPEyZGyZtiDRNwroOUidlJMsYc8",
-    "AIzaSyAQ9m3UK2phu4vwir8kl0Y_zNek9dvP1LE",
-    "AIzaSyDF2TVuNw7uPMwhqKNjZQ3eJ3RDKgJQ_Kw",
-    "AIzaSyB8wGAGqHuH6lHwTuxEEMkixvMVHit8J0Q",
-]
+# ========== 1. НОВЫЕ КЛЮЧИ (только Groq и Exa) ==========
 
 # --- Groq (5 ключей для основных задач, 1 отдельный для 3 аудита) ---
 GROQ_MAIN_KEYS = [
@@ -66,10 +57,8 @@ class RoundRobin:
             self.idx += 1
             return k
 
-gemini_rr = RoundRobin(GEMINI_API_KEYS)
 groq_main_rr = RoundRobin(GROQ_MAIN_KEYS)
 exa_rr = RoundRobin(EXA_API_KEYS)
-# Для 3 аудита используем один ключ
 def get_groq_audit_key():
     return GROQ_AUDIT_KEY
 
@@ -333,28 +322,8 @@ def fetch_site_profile(url_or_domain: str) -> dict:
         "token_counter": {}, "issue": last_error
     }
 
-# ========== 6. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM ==========
+# ========== 6. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM (только Groq) ==========
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
-
-def call_gemini(messages, temperature=0.3, max_tokens=4096):
-    api_key = gemini_rr.get()
-    if not api_key:
-        raise Exception("Нет доступных ключей Gemini")
-    contents = []
-    for msg in messages:
-        role = "model" if msg["role"] == "assistant" else msg["role"]
-        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-    payload = {"contents": contents, "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}}
-    url = f"{GEMINI_API_URL}?key={api_key}"
-    response = requests.post(url, json=payload, timeout=90)
-    if response.status_code == 200:
-        data = response.json()
-        return {"role": "assistant", "content": data["candidates"][0]["content"]["parts"][0]["text"]}
-    elif response.status_code == 429:
-        raise Exception("Rate limit")
-    else:
-        raise Exception(f"Gemini ошибка {response.status_code}")
 
 def call_groq_main(messages, temperature=0.3, max_tokens=4096):
     api_key = groq_main_rr.get()
@@ -621,7 +590,7 @@ URL: {url}
     except Exception as e:
         return f"❌ Ошибка при выполнении 3 аудита: {e}"
 
-# ========== 12. НОВАЯ ФУНКЦИЯ: анализ одного сайта по 4 пунктам ==========
+# ========== 12. НОВАЯ ФУНКЦИЯ: анализ одного сайта по 4 пунктам (только Groq) ==========
 def analyze_single_site(domain: str) -> dict:
     results = {"domain": domain, "status": "ok", "error": None, "data": {}}
     try:
@@ -629,7 +598,7 @@ def analyze_single_site(domain: str) -> dict:
         if not profile.get("ok"):
             raise RuntimeError(f"Не удалось открыть сайт: {profile.get('issue', 'ошибка')}")
 
-        # Пункт 1: коммерческий/некоммерческий, регион, масштаб (Gemini)
+        # Пункт 1: коммерческий/некоммерческий, регион, масштаб (Groq)
         prompt1 = f"""
 Проанализируй сайт: {profile['final_url']}
 На основе профиля сайта и его содержимого определи:
@@ -642,14 +611,14 @@ def analyze_single_site(domain: str) -> dict:
 Регион:
 Масштаб:
 """
-        response1 = call_gemini([{"role": "user", "content": prompt1}], temperature=0.2, max_tokens=300)
+        response1 = call_groq_main([{"role": "user", "content": prompt1}], temperature=0.2, max_tokens=300)
         lines = response1.get("content", "").strip().split("\n")
         status_line = lines[0].replace("Статус:", "").strip() if len(lines) > 0 else ""
         region_line = lines[1].replace("Регион:", "").strip() if len(lines) > 1 else ""
         scale_line = lines[2].replace("Масштаб:", "").strip() if len(lines) > 2 else ""
         results["data"]["point1"] = {"status": status_line, "region": region_line, "scale": scale_line}
 
-        # Пункт 2: топ-10 коммерческих запросов (Gemini)
+        # Пункт 2: топ-10 коммерческих запросов (Groq)
         prompt2 = f"""
 Проанализируй сайт: {profile['final_url']}
 Профиль: {summarize_profile(profile)}
@@ -662,10 +631,10 @@ def analyze_single_site(domain: str) -> dict:
 Верни список из 10 фраз, каждая с примерным количеством просмотров в месяц (если нет данных — укажи оценку). Формат: "запрос — количество".
 Если точных данных нет, укажи диапазон (например, "50–200") или "нет данных".
 """
-        response2 = call_gemini([{"role": "user", "content": prompt2}], temperature=0.3, max_tokens=1500)
+        response2 = call_groq_main([{"role": "user", "content": prompt2}], temperature=0.3, max_tokens=1500)
         results["data"]["point2"] = response2.get("content", "Ошибка генерации запросов")
 
-        # Пункт 3: прямые конкуренты (Groq + Exa)
+        # Пункт 3: прямые конкуренты (Exa + Groq)
         candidate_urls = get_candidate_domains(domain, "direct")
         competitors = verify_competitors(profile, candidate_urls)
         comp_list = [c["url"] for c in competitors[:10]]
