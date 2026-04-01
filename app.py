@@ -16,9 +16,8 @@ from bs4 import BeautifulSoup
 st.set_page_config(page_title="Конкурентный Анализатор | 5 сайтов", layout="wide")
 st.title("Конкурентный Анализатор (5 сайтов)")
 
-# ========== 1. НОВЫЕ КЛЮЧИ (только Groq и Exa) ==========
+# ========== 1. КЛЮЧИ (только Groq и Exa) ==========
 
-# --- Groq (5 ключей для основных задач, 1 отдельный для 3 аудита) ---
 GROQ_MAIN_KEYS = [
     "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",
     "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",
@@ -28,7 +27,6 @@ GROQ_MAIN_KEYS = [
 ]
 GROQ_AUDIT_KEY = "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"
 
-# --- Exa (7 ключей) ---
 EXA_API_KEYS = [
     "12fde322-d205-43a3-a2a3-56671f195f6a",
     "13c5e3ce-1017-4479-86d2-c496e5e5c092",
@@ -39,7 +37,6 @@ EXA_API_KEYS = [
     "6c88374d-ee51-498f-b669-4050832aca02",
 ]
 
-# --- Jina для 3 аудита (остаётся) ---
 JINA_3AUDIT_KEY = "jina_d3ebb125d2f24e938e21abf8d562e5498EdB-_JFA3jU8lgOtlvxURphhdBe"
 JINA_READER_URL = "https://r.jina.ai/"
 
@@ -325,19 +322,31 @@ def fetch_site_profile(url_or_domain: str) -> dict:
 # ========== 6. ФУНКЦИИ ДЛЯ РАБОТЫ С LLM (только Groq) ==========
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-def call_groq_main(messages, temperature=0.3, max_tokens=4096):
-    api_key = groq_main_rr.get()
-    if not api_key:
-        raise Exception("Нет доступных ключей Groq")
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {"model": "llama-3.3-70b-versatile", "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
-    response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
-    if response.status_code == 200:
-        return response.json()["choices"][0]["message"]
-    elif response.status_code == 429:
-        raise Exception("Rate limit")
-    else:
-        raise Exception(f"Groq ошибка {response.status_code}")
+def call_groq_main(messages, temperature=0.3, max_tokens=4096, retries=3):
+    """Вызов Groq с повторными попытками при rate limit"""
+    for attempt in range(retries):
+        api_key = groq_main_rr.get()
+        if not api_key:
+            raise Exception("Нет доступных ключей Groq")
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {"model": "llama-3.3-70b-versatile", "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        try:
+            response = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=90)
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]
+            elif response.status_code == 429:
+                # Rate limit – ждём и пробуем снова (возможно, другой ключ)
+                wait = 2 ** attempt  # экспоненциальная задержка: 1, 2, 4 секунды
+                st.warning(f"Превышен лимит Groq (429), попытка {attempt+1}/{retries}, пауза {wait} сек")
+                time.sleep(wait)
+                continue
+            else:
+                raise Exception(f"Groq ошибка {response.status_code}: {response.text}")
+        except requests.exceptions.RequestException as e:
+            if attempt == retries - 1:
+                raise Exception(f"Ошибка сети: {e}")
+            time.sleep(1)
+    raise Exception("Превышено количество попыток вызова Groq")
 
 def call_groq_audit(messages, temperature=0.3, max_tokens=4096):
     api_key = get_groq_audit_key()
@@ -413,34 +422,36 @@ def verify_competitors(our_profile, candidate_urls):
             seen.add(dom)
             unique.append(url)
 
-    def process(url):
+    # Обрабатываем кандидатов последовательно, чтобы не перегружать Groq
+    for url in unique:
         domain = get_domain_key(url)
         if domain == our_profile.get("domain"):
-            return None
+            continue
         if is_blocked_domain(domain):
-            return None
+            continue
 
         candidate_profile = fetch_site_profile(url)
         if not candidate_profile.get("ok"):
-            return None
+            continue
 
         our_keywords_set = set(our_profile.get("keywords", []))
         candidate_keywords_set = set(candidate_profile.get("keywords", []))
         if not (our_keywords_set & candidate_keywords_set):
-            return None
+            continue
 
         comparison = compare_profiles(our_profile, candidate_profile)
         if comparison["score"] < 10:
-            return None
+            continue
 
+        # Проверка релевантности через Groq
         if not is_relevant_competitor(our_profile, candidate_profile):
-            return None
+            continue
 
         actual_type = classify_competitor(comparison)
         if actual_type != "direct":
-            return None
+            continue
 
-        return {
+        verified.append({
             "url": candidate_profile["final_url"],
             "domain": candidate_profile["domain"],
             "title": candidate_profile["title"],
@@ -451,17 +462,11 @@ def verify_competitors(our_profile, candidate_urls):
             "shared_keywords": comparison["shared_keywords"],
             "scale_comment": comparison["scale_comment"],
             "reason": comparison["reason"]
-        }
+        })
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
-        futures = [ex.submit(process, url) for url in unique]
-        for fut in concurrent.futures.as_completed(futures):
-            try:
-                rec = fut.result()
-                if rec:
-                    verified.append(rec)
-            except Exception as e:
-                continue
+        # Небольшая задержка, чтобы не забивать лимиты
+        time.sleep(0.5)
+
     verified.sort(key=lambda x: x["score"], reverse=True)
     return verified
 
@@ -535,7 +540,6 @@ def analyze_imidj(url: str) -> str:
 # ========== 11. ФУНКЦИЯ 3 АУДИТА (отдельный ключ) ==========
 def run_3_audit(url: str) -> str:
     try:
-        # Получаем контент через Jina
         jina_url = JINA_READER_URL + url
         headers = {"Authorization": f"Bearer {JINA_3AUDIT_KEY}"}
         response = requests.get(jina_url, headers=headers, timeout=15)
@@ -590,7 +594,7 @@ URL: {url}
     except Exception as e:
         return f"❌ Ошибка при выполнении 3 аудита: {e}"
 
-# ========== 12. НОВАЯ ФУНКЦИЯ: анализ одного сайта по 4 пунктам (только Groq) ==========
+# ========== 12. АНАЛИЗ ОДНОГО САЙТА ПО 4 ПУНКТАМ (ТОЛЬКО GROQ) ==========
 def analyze_single_site(domain: str) -> dict:
     results = {"domain": domain, "status": "ok", "error": None, "data": {}}
     try:
@@ -617,6 +621,7 @@ def analyze_single_site(domain: str) -> dict:
         region_line = lines[1].replace("Регион:", "").strip() if len(lines) > 1 else ""
         scale_line = lines[2].replace("Масштаб:", "").strip() if len(lines) > 2 else ""
         results["data"]["point1"] = {"status": status_line, "region": region_line, "scale": scale_line}
+        time.sleep(0.5)  # пауза между запросами
 
         # Пункт 2: топ-10 коммерческих запросов (Groq)
         prompt2 = f"""
@@ -633,13 +638,13 @@ def analyze_single_site(domain: str) -> dict:
 """
         response2 = call_groq_main([{"role": "user", "content": prompt2}], temperature=0.3, max_tokens=1500)
         results["data"]["point2"] = response2.get("content", "Ошибка генерации запросов")
+        time.sleep(0.5)
 
         # Пункт 3: прямые конкуренты (Exa + Groq)
         candidate_urls = get_candidate_domains(domain, "direct")
         competitors = verify_competitors(profile, candidate_urls)
         comp_list = [c["url"] for c in competitors[:10]]
         if not comp_list:
-            # Резерв: просим Groq выдать 10 предполагаемых конкурентов
             prompt3 = f"""
 Найди 10 предполагаемых прямых конкурентов для сайта {domain} (даже если они не идеально подходят, но хоть как-то пересекаются по тематике).
 Верни только список корневых URL, по одному на строку.
@@ -650,10 +655,10 @@ def analyze_single_site(domain: str) -> dict:
             except:
                 comp_list = []
         results["data"]["point3"] = comp_list[:10]
+        time.sleep(0.5)
 
         # Пункт 4: мессенджеры, площадки, имиджевый анализ (Groq)
         region = results["data"]["point1"].get("region", "")
-        # Создаём список конкурентов для рекомендаций (без скоринга)
         comp_for_rec = [{"url": u, "score": 0, "shared_keywords": []} for u in comp_list[:5]]
         rec_text = recommend_messengers_platforms(profile, comp_for_rec, region)
         messengers = []
@@ -700,16 +705,17 @@ if st.button("Анализировать 5 сайтов"):
         st.warning("Введите хотя бы один домен")
     else:
         with st.spinner("Анализируем сайты..."):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(analyze_single_site, d): d for d in valid_domains}
-                results_dict = {}
-                for future in concurrent.futures.as_completed(futures):
-                    domain = futures[future]
-                    try:
-                        res = future.result()
-                        results_dict[domain] = res
-                    except Exception as e:
-                        results_dict[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
+            results_dict = {}
+            # Обрабатываем сайты последовательно, чтобы не перегружать Groq
+            for domain in valid_domains:
+                st.write(f"Обработка {domain}...")
+                try:
+                    res = analyze_single_site(domain)
+                    results_dict[domain] = res
+                except Exception as e:
+                    results_dict[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
+                # Небольшая пауза между сайтами
+                time.sleep(1)
 
             for domain in valid_domains:
                 res = results_dict.get(domain, {"status": "error", "error": "Неизвестная ошибка"})
@@ -718,17 +724,14 @@ if st.button("Анализировать 5 сайтов"):
                         st.error(f"Ошибка: {res['error']}")
                         continue
                     data = res["data"]
-                    # Пункт 1
                     st.markdown("**1. Коммерческий статус, регион, масштаб**")
                     st.write(f"**Статус:** {data.get('point1', {}).get('status', '—')}")
                     st.write(f"**Регион:** {data.get('point1', {}).get('region', '—')}")
                     st.write(f"**Масштаб:** {data.get('point1', {}).get('scale', '—')}")
 
-                    # Пункт 2
                     st.markdown("**2. Топ-10 коммерческих запросов**")
                     st.markdown(data.get("point2", "Нет данных"))
 
-                    # Пункт 3
                     st.markdown("**3. Прямые конкуренты**")
                     comps = data.get("point3", [])
                     if comps:
@@ -737,7 +740,6 @@ if st.button("Анализировать 5 сайтов"):
                     else:
                         st.write("Не найдено")
 
-                    # Пункт 4
                     st.markdown("**4. Мессенджеры, площадки и имиджевый анализ**")
                     point4 = data.get("point4", {})
                     if point4.get("messengers"):
