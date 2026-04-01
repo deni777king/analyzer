@@ -409,7 +409,7 @@ def find_competitors_with_openai(domain: str, profile: dict):
         st.warning(f"Ошибка OpenAI при поиске конкурентов: {e}")
         return [], {}
 
-# ========== 8. ФУНКЦИИ ДЛЯ РЕКОМЕНДАЦИЙ (через Groq) ==========
+# ========== 8. ФУНКЦИИ ДЛЯ РЕКОМЕНДАЦИЙ И ИМИДЖЕВОГО АНАЛИЗА (через Groq) ==========
 MESSENGER_RECOMMEND_PROMPT = """Ты аналитик по маркетингу. На основе данных о сайте и его конкурентах определи, какие мессенджеры и площадки лучше всего подойдут для привлечения клиентов.
 
 Данные о нашем сайте:
@@ -446,7 +446,6 @@ def recommend_messengers_platforms(our_profile, competitors, region):
         st.warning(f"Ошибка при рекомендации: {e}")
         return "Рекомендации не удалось сформировать."
 
-# ========== 9. ИМИДЖЕВЫЙ АНАЛИЗ (через Groq) ==========
 IMIDGE_PROMPT = """
 Ты аналитик сайтов. Проверь сайт по URL и определи, относится ли он к "имиджевым клиентам".
 
@@ -476,7 +475,7 @@ def analyze_imidj(url: str) -> str:
     response = call_groq_main([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=300)
     return response.get("content", "Ошибка анализа")
 
-# ========== 10. ФУНКЦИЯ 3 АУДИТА ==========
+# ========== 9. ФУНКЦИЯ 3 АУДИТА ==========
 def run_3_audit(url: str) -> str:
     try:
         jina_url = JINA_READER_URL + url
@@ -485,10 +484,6 @@ def run_3_audit(url: str) -> str:
         if response.status_code != 200:
             return f"❌ Не удалось загрузить сайт: статус {response.status_code}"
         markdown = response.text
-        title_match = re.search(r'# (.*?)\n', markdown)
-        title = title_match.group(1) if title_match else ""
-        desc_match = re.search(r'description: (.*?)\n', markdown)
-        description = desc_match.group(1) if desc_match else ""
         text = re.sub(r'[#*`_\[\]\(\)]', ' ', markdown)
         text = clean_text(text)
         content = text[:8000]
@@ -533,15 +528,15 @@ URL: {url}
     except Exception as e:
         return f"❌ Ошибка при выполнении 3 аудита: {e}"
 
-# ========== 11. АНАЛИЗ ОДНОГО САЙТА ==========
-def analyze_single_site(domain: str, is_first: bool = False) -> dict:
+# ========== 10. АНАЛИЗ ОДНОГО САЙТА ==========
+def analyze_single_site(domain: str, use_openai: bool = False) -> dict:
     results = {"domain": domain, "status": "ok", "error": None, "data": {}}
     try:
         profile = fetch_site_profile(domain)
         if not profile.get("ok"):
             raise RuntimeError(f"Не удалось открыть сайт: {profile.get('issue', 'ошибка')}")
 
-        # Пункт 1: Groq
+        # Пункт 1 (Groq)
         prompt1 = f"""
 Проанализируй сайт: {profile['final_url']}
 На основе профиля сайта и его содержимого определи:
@@ -562,7 +557,7 @@ def analyze_single_site(domain: str, is_first: bool = False) -> dict:
         results["data"]["point1"] = {"status": status_line, "region": region_line, "scale": scale_line}
         time.sleep(0.5)
 
-        # Пункт 2: Groq
+        # Пункт 2 (Groq)
         prompt2 = f"""
 Проанализируй сайт: {profile['final_url']}
 Профиль: {summarize_profile(profile)}
@@ -579,8 +574,8 @@ def analyze_single_site(domain: str, is_first: bool = False) -> dict:
         results["data"]["point2"] = response2.get("content", "Ошибка генерации запросов")
         time.sleep(0.5)
 
-        # Пункт 3: конкуренты (только для первого сайта, через OpenAI)
-        if is_first:
+        # Пункт 3: конкуренты (только если use_openai=True)
+        if use_openai:
             comp_list, usage = find_competitors_with_openai(domain, profile)
             results["data"]["point3"] = comp_list[:10]
             results["data"]["openai_usage"] = usage
@@ -589,9 +584,10 @@ def analyze_single_site(domain: str, is_first: bool = False) -> dict:
             results["data"]["openai_usage"] = {}
         time.sleep(0.5)
 
-        # Пункт 4: Groq
+        # Пункт 4 (Groq)
         region = results["data"]["point1"].get("region", "")
-        comp_for_rec = [{"url": u, "score": 0, "shared_keywords": []} for u in comp_list[:5]] if is_first else []
+        # Для рекомендаций используем список конкурентов, если есть
+        comp_for_rec = [{"url": u, "score": 0, "shared_keywords": []} for u in comp_list[:5]] if use_openai else []
         rec_text = recommend_messengers_platforms(profile, comp_for_rec, region)
         messengers = []
         platforms = []
@@ -624,7 +620,7 @@ def analyze_single_site(domain: str, is_first: bool = False) -> dict:
         results["error"] = str(e)
     return results
 
-# ========== 12. ИНТЕРФЕЙС STREAMLIT ==========
+# ========== 11. ИНТЕРФЕЙС STREAMLIT ==========
 domains = []
 cols = st.columns(5)
 for i in range(5):
@@ -632,23 +628,31 @@ for i in range(5):
         domains.append(st.text_input(f"Сайт {i+1}", key=f"domain_{i}", placeholder="example.com"))
 
 if st.button("Анализировать 5 сайтов"):
-    valid_domains = [d.strip() for d in domains if d.strip()]
+    # Собираем валидные домены (не пустые)
+    valid_domains = []
+    for i, d in enumerate(domains):
+        if d.strip():
+            valid_domains.append((i, d.strip()))  # сохраняем индекс для определения позиции
+
     if not valid_domains:
         st.warning("Введите хотя бы один домен")
     else:
         with st.spinner("Анализируем сайты..."):
             results_dict = {}
-            for idx, domain in enumerate(valid_domains):
-                is_first = (idx == 0)
+            # Обрабатываем сайты последовательно
+            for idx, (pos, domain) in enumerate(valid_domains):
+                # use_openai = True только если это поле "Сайт 1" (индекс 0)
+                use_openai = (pos == 0)
                 st.write(f"Обработка {domain}...")
                 try:
-                    res = analyze_single_site(domain, is_first)
+                    res = analyze_single_site(domain, use_openai)
                     results_dict[domain] = res
                 except Exception as e:
                     results_dict[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
                 time.sleep(1)
 
-            for domain in valid_domains:
+            # Вывод результатов в порядке полей (сохраняя порядок)
+            for pos, domain in valid_domains:
                 res = results_dict.get(domain, {"status": "error", "error": "Неизвестная ошибка"})
                 with st.expander(f"📊 {domain}", expanded=True):
                     if res["status"] == "error":
@@ -669,9 +673,12 @@ if st.button("Анализировать 5 сайтов"):
                         for url in comps:
                             st.markdown(f"- [{url}]({url})")
                     else:
-                        st.write("Не найдено (конкуренты ищутся только для первого сайта)")
+                        if pos == 0:
+                            st.write("Конкуренты не найдены")
+                        else:
+                            st.write("Конкуренты ищутся только для сайта 1")
 
-                    # Всегда выводим статистику OpenAI для первого сайта (даже если конкурентов нет)
+                    # Статистика токенов для первого сайта (всегда)
                     usage = data.get("openai_usage", {})
                     if usage:
                         st.markdown("---")
@@ -679,9 +686,6 @@ if st.button("Анализировать 5 сайтов"):
                         st.write(f"- Входные токены: {usage.get('prompt_tokens', 0)}")
                         st.write(f"- Выходные токены: {usage.get('completion_tokens', 0)}")
                         st.write(f"- Всего токенов: {usage.get('total_tokens', 0)}")
-                    elif idx == 0:
-                        st.markdown("---")
-                        st.write("Статистика OpenAI не доступна (ошибка вызова)")
 
                     st.markdown("**4. Мессенджеры, площадки и имиджевый анализ**")
                     point4 = data.get("point4", {})
@@ -703,7 +707,7 @@ if st.button("Анализировать 5 сайтов"):
 
         st.success("Анализ завершён!")
 
-# ========== 13. КНОПКА 3 АУДИТА ==========
+# ========== 12. КНОПКА 3 АУДИТА ==========
 st.markdown("---")
 st.subheader("3 Аудит (отдельный пул Groq)")
 audit_url = st.text_input("Введите URL для 3 аудита", key="audit_input", placeholder="https://...")
