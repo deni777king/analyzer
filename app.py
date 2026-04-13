@@ -59,7 +59,7 @@ exa_rr = RoundRobin(EXA_API_KEYS)
 def get_groq_audit_key():
     return GROQ_AUDIT_KEY
 
-# ========== 3. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ПОЛЬЗОВАТЕЛЕЙ (не используется в UI, оставлено для совместимости) ==========
+# ========== 3. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ПОЛЬЗОВАТЕЛЕЙ ==========
 class UserQueue:
     def __init__(self):
         self.queue = deque()
@@ -629,62 +629,62 @@ for i in range(5):
         domains.append(st.text_input(f"Сайт {i+1}", key=f"domain_{i}", placeholder="example.com"))
 
 if st.button("Анализировать 5 сайтов"):
-    valid_domains = [d.strip() for d in domains if d.strip()]
-    if not valid_domains:
+    # Собираем валидные домены с сохранением позиции
+    valid = []
+    for i, d in enumerate(domains):
+        if d.strip():
+            valid.append((i, d.strip()))
+
+    if not valid:
         st.warning("Введите хотя бы один домен")
     else:
-        # Создаём placeholder для прогресса и результатов
-        progress_placeholder = st.empty()
-        results_placeholder = st.empty()
-        
-        results_dict = {}
-        total = len(valid_domains)
-        
-        for idx, domain in enumerate(valid_domains, 1):
-            use_openai = (idx == 1)  # только для первого сайта
-            progress_placeholder.info(f"🔄 Анализ {domain} ({idx}/{total})...")
-            try:
-                res = analyze_single_site(domain, use_openai)
-                results_dict[domain] = res
-            except Exception as e:
-                results_dict[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
-            time.sleep(0.5)
-        
-        progress_placeholder.success("✅ Анализ завершён!")
-        
-        # Отрисовываем результаты после завершения всех вычислений
-        with results_placeholder.container():
-            for domain in valid_domains:
+        with st.spinner("Анализируем сайты..."):
+            results_dict = {}
+            for pos, domain in valid:
+                use_openai = (pos == 0)  # только для поля "Сайт 1"
+                st.write(f"Обработка {domain}...")
+                try:
+                    res = analyze_single_site(domain, use_openai)
+                    results_dict[domain] = res
+                except Exception as e:
+                    results_dict[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
+                time.sleep(1)
+
+            for pos, domain in valid:
                 res = results_dict.get(domain, {"status": "error", "error": "Неизвестная ошибка"})
                 with st.expander(f"📊 {domain}", expanded=True):
                     if res["status"] == "error":
                         st.error(f"Ошибка: {res['error']}")
                         continue
                     data = res["data"]
-                    
+
                     st.markdown("**1. Тип сайта и география бизнеса**")
                     st.write(f"**Тип сайта:** {data.get('point1', {}).get('type', '—')}")
                     st.write(f"**География:** {data.get('point1', {}).get('geography', '—')}")
-                    
+
                     st.markdown("**2. Семантика (10 коммерческих запросов)**")
                     st.markdown(data.get("point2", "Нет данных"))
-                    
+
                     st.markdown("**3. Прямые конкуренты**")
                     comps = data.get("point3", [])
                     if comps:
                         for url in comps:
                             st.markdown(f"- [{url}]({url})")
                     else:
-                        st.write("Конкуренты не найдены")
-                    
-                    if domain == valid_domains[0] and data.get("openai_usage"):
+                        if pos == 0:
+                            st.write("Конкуренты не найдены")
+                        else:
+                            st.write("Конкуренты ищутся только для сайта 1")
+
+                    # Статистика токенов для первого сайта
+                    if pos == 0 and data.get("openai_usage"):
                         usage = data["openai_usage"]
                         st.markdown("---")
                         st.markdown("**Статистика использования OpenAI:**")
                         st.write(f"- Входные токены: {usage.get('prompt_tokens', 0)}")
                         st.write(f"- Выходные токены: {usage.get('completion_tokens', 0)}")
                         st.write(f"- Всего токенов: {usage.get('total_tokens', 0)}")
-                    
+
                     st.markdown("**4. Мессенджеры и площадки для привлечения клиентов**")
                     point4 = data.get("point4", {})
                     if point4.get("messengers"):
@@ -699,10 +699,12 @@ if st.button("Анализировать 5 сайтов"):
                             st.write(f"- {name}: {perc}")
                     else:
                         st.write("Нет данных по площадкам")
-                    
+
                     st.markdown("**5. Имиджевый анализ**")
                     st.write(data.get("point5", "Нет данных"))
-                    
+
+        st.success("Анализ завершён!")
+
 # ========== 12. КНОПКА 3 АУДИТА ==========
 st.markdown("---")
 st.subheader("3 Аудит (отдельный пул Groq)")
