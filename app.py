@@ -59,7 +59,7 @@ exa_rr = RoundRobin(EXA_API_KEYS)
 def get_groq_audit_key():
     return GROQ_AUDIT_KEY
 
-# ========== 3. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ПОЛЬЗОВАТЕЛЕЙ ==========
+# ========== 3. УПРАВЛЕНИЕ ОЧЕРЕДЬЮ ПОЛЬЗОВАТЕЛЕЙ (не используется в UI, оставлено для совместимости) ==========
 class UserQueue:
     def __init__(self):
         self.queue = deque()
@@ -638,20 +638,31 @@ if st.button("Анализировать 5 сайтов"):
     if not valid:
         st.warning("Введите хотя бы один домен")
     else:
-        with st.spinner("Анализируем сайты..."):
-            results_dict = {}
-            for pos, domain in valid:
-                use_openai = (pos == 0)  # только для поля "Сайт 1"
-                st.write(f"Обработка {domain}...")
-                try:
-                    res = analyze_single_site(domain, use_openai)
-                    results_dict[domain] = res
-                except Exception as e:
-                    results_dict[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
-                time.sleep(1)
+        # Создаём контейнер для прогресса и результатов
+        progress_container = st.empty()
+        results_container = st.container()
 
+        # Словарь для результатов
+        all_results = {}
+
+        for pos, domain in valid:
+            progress_container.info(f"🔄 Анализируем {domain}...")
+            use_openai = (pos == 0)  # только для поля "Сайт 1"
+            try:
+                res = analyze_single_site(domain, use_openai)
+                all_results[domain] = res
+            except Exception as e:
+                all_results[domain] = {"domain": domain, "status": "error", "error": str(e), "data": {}}
+            # Небольшая пауза между запросами, чтобы не перегружать API
+            time.sleep(1)
+
+        progress_container.empty()
+        st.success("✅ Анализ завершён!")
+
+        # Вывод результатов в контейнер
+        with results_container:
             for pos, domain in valid:
-                res = results_dict.get(domain, {"status": "error", "error": "Неизвестная ошибка"})
+                res = all_results.get(domain, {"status": "error", "error": "Неизвестная ошибка"})
                 with st.expander(f"📊 {domain}", expanded=True):
                     if res["status"] == "error":
                         st.error(f"Ошибка: {res['error']}")
@@ -702,8 +713,6 @@ if st.button("Анализировать 5 сайтов"):
 
                     st.markdown("**5. Имиджевый анализ**")
                     st.write(data.get("point5", "Нет данных"))
-
-        st.success("Анализ завершён!")
 
 # ========== 12. КНОПКА 3 АУДИТА ==========
 st.markdown("---")
